@@ -1,0 +1,13 @@
+venv/
+_pycache_/
+*.pyc
+*.pyo
+
+.env
+*.log
+
+uploads/
+lms.db
+
+.mypy_cache/
+.pytest_cache/
