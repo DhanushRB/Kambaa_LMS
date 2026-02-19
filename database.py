@@ -86,6 +86,7 @@ class Course(Base):
     payment_type = Column(String(20), default='free') # 'free' or 'paid'
     default_price = Column(Float, default=0.0)
     instructor_id = Column(Integer, ForeignKey("users.id"))  # Legacy field, now managed by admin
+    banner_image = Column(String(500), nullable=True) # URL or path to course banner image
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     instructor = relationship("User")  # Legacy relationship

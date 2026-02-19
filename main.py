@@ -470,6 +470,13 @@ except ImportError as e:
     logger.error(f"Failed to load enhanced analytics router: {e}")
 
 try:
+    from routers.file_router import router as file_server_router
+    app.include_router(file_server_router)
+    logger.info("File server router loaded successfully")
+except ImportError as e:
+    logger.error(f"Failed to load file server router: {e}")
+
+try:
     from file_link_api import router as file_link_router
     app.include_router(file_link_router, prefix="/api")
     logger.info("File link router loaded successfully")
@@ -651,7 +658,8 @@ async def track_resource_view(
             student_id=user.id,
             viewed_at=datetime.utcnow(),
             ip_address=request.client.host if request.client else "unknown",
-            user_agent=request.headers.get("user-agent", "")
+            user_agent=request.headers.get("user-agent", ""),
+            resource_type="RESOURCE"  # Explicitly set for tracking
         )
         
         db.add(view_record)
@@ -711,7 +719,8 @@ async def view_resource(
                                     student_id=user.id,
                                     viewed_at=datetime.utcnow(),
                                     ip_address=request.client.host if request.client else "unknown",
-                                    user_agent=request.headers.get("user-agent", "")
+                                    user_agent=request.headers.get("user-agent", ""),
+                                    resource_type="COHORT_RESOURCE"
                                 )
                                 db.add(view_record)
                                 db.commit()
@@ -779,7 +788,8 @@ async def view_resource(
                         student_id=user.id,
                         viewed_at=datetime.utcnow(),
                         ip_address=request.client.host if request.client else "unknown",
-                        user_agent=request.headers.get("user-agent", "")
+                        user_agent=request.headers.get("user-agent", ""),
+                        resource_type="RESOURCE"
                     )
                     db.add(view_record)
                     db.commit()

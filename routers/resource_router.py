@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 UPLOAD_BASE_DIR = Path("uploads")
 UPLOAD_BASE_DIR.mkdir(exist_ok=True)
 (UPLOAD_BASE_DIR / "resources").mkdir(exist_ok=True)
+(UPLOAD_BASE_DIR / "course_banners").mkdir(exist_ok=True)
 
 @router.post("/upload/resource")
 async def upload_resource_simple(
@@ -153,6 +154,83 @@ async def upload_resource(
         db.rollback()
         logger.error(f"Upload resource error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to upload resource")
+
+@router.post("/upload/course-banner")
+async def upload_course_banner(
+    file: UploadFile = File(...),
+    current_user = Depends(get_current_admin_or_presenter),
+    db: Session = Depends(get_db)
+):
+    """Upload a course banner image with automatic resizing to 1280x420"""
+    try:
+        # Check roles - only Admin and Manager allowed
+        from database import Admin, Manager
+        is_admin = db.query(Admin).filter(Admin.id == current_user.id).first() is not None
+        is_manager = db.query(Manager).filter(Manager.id == current_user.id).first() is not None
+        
+        if not (is_admin or is_manager):
+            raise HTTPException(status_code=403, detail="Only Admins or Managers can upload banners")
+
+        # Generate unique filename
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+            raise HTTPException(status_code=400, detail="Invalid file type. Only JPG, PNG, WEBP are allowed.")
+            
+        unique_filename = f"banner_{uuid.uuid4()}.jpg" # Standardize to JPG for efficiency
+        file_path = UPLOAD_BASE_DIR / "course_banners" / unique_filename
+        
+        # Read and process image
+        from PIL import Image
+        import io
+        
+        content = await file.read()
+        image = Image.open(io.BytesIO(content))
+        
+        # Convert to RGB if necessary (handles PNG transparency)
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+            
+        # Target size
+        target_width = 1280
+        target_height = 420
+        
+        # Calculate aspect ratios
+        img_width, img_height = image.size
+        aspect = img_width / img_height
+        target_aspect = target_width / target_height
+        
+        if aspect > target_aspect:
+            # Image is wider than target - resize by height and crop width
+            new_height = target_height
+            new_width = int(new_height * aspect)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            left = (new_width - target_width) / 2
+            image = image.crop((left, 0, left + target_width, target_height))
+        else:
+            # Image is taller than target - resize by width and crop height
+            new_width = target_width
+            new_height = int(new_width / aspect)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            top = (new_height - target_height) / 2
+            image = image.crop((0, top, target_width, top + target_height))
+            
+        # Save processed image
+        image.save(file_path, "JPEG", quality=85, optimize=True)
+        
+        banner_url = f"/api/course-banners/{unique_filename}"
+        
+        return {
+            "message": "Banner uploaded and resized successfully",
+            "banner_url": banner_url,
+            "filename": unique_filename
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload banner error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to process and upload banner image")
 
 @router.get("/resources")
 async def get_resources(
@@ -469,8 +547,8 @@ async def process_file_download_background(session_id: int, resource_id: int, fi
                 resource.file_path = str(file_path)
                 resource.file_size = size
                 resource.file_type = resource_type
-                # Update description to indicate local copy
-                resource.description = (resource.description or "") + " (Local Copy)"
+                # Update description to indicate local copy (REMOVED: " (Local Copy)")
+                resource.description = (resource.description or "")
                 db.commit()
                 logger.info(f"Updated cohort resource {resource_id} with local file info")
         else:
@@ -480,7 +558,7 @@ async def process_file_download_background(session_id: int, resource_id: int, fi
                 resource.file_path = str(file_path)
                 resource.file_size = size
                 resource.resource_type = resource_type
-                resource.description = (resource.description or "") + " (Local Copy)"
+                resource.description = (resource.description or "")
                 db.commit()
                 logger.info(f"Updated resource {resource_id} with local file info")
             

@@ -164,6 +164,8 @@ async def get_cohort_details(
                     "title": course.title,
                     "description": course.description,
                     "duration_weeks": course.duration_weeks,
+                    "sessions_per_week": course.sessions_per_week,
+                    "banner_image": course.banner_image,
                     "assigned_at": cc.assigned_at,
                     "is_cohort_specific": False
                 })
@@ -184,6 +186,8 @@ async def get_cohort_details(
                 "title": course.title,
                 "description": course.description,
                 "duration_weeks": course.duration_weeks,
+                "sessions_per_week": course.sessions_per_week,
+                "banner_image": course.banner_image,
                 "modules_count": modules_count,
                 "assigned_at": course.created_at,  # Use created_at as assigned_at for cohort-specific courses
                 "is_cohort_specific": True
@@ -594,6 +598,10 @@ async def get_available_courses(
                 "id": course.id,
                 "title": course.title,
                 "description": course.description,
+                "banner_image": course.banner_image,
+                "duration_weeks": course.duration_weeks,
+                "sessions_per_week": course.sessions_per_week,
+                "is_active": course.is_active,
                 "created_at": course.created_at
             } for course in available_courses]
         }

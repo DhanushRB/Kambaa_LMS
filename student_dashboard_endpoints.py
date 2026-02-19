@@ -3,7 +3,7 @@ from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 from database import get_db, User, Enrollment, Course, UserCohort, CohortCourse, Cohort, Module, Session as SessionModel, Resource, SessionContent, PresenterCohort, Presenter, StudentSessionStatus, StudentModuleStatus
 from resource_analytics_models import ResourceView
-from assignment_quiz_models import Assignment, AssignmentSubmission
+from assignment_quiz_models import Assignment, AssignmentSubmission, QuizResult, QuizStatus
 from auth import get_current_user, get_current_user_any_role
 from email_utils import send_course_enrollment_confirmation
 import logging
@@ -230,18 +230,28 @@ def calculate_student_session_progress(db: Session, student_id: int, session_id:
             resources = db.query(Resource).filter(Resource.session_id == session_id).all()
             session_contents = db.query(SessionContent).filter(SessionContent.session_id == session_id).all()
         
-        total_items = len(resources) + len(session_contents)
+        # Filter out meeting links from session contents for progress calculation
+        trackable_session_contents = [c for c in session_contents if c.content_type != "MEETING_LINK"]
         
-        # Check for quizzes
+        total_items = len(resources) + len(trackable_session_contents)
+        
+        # Check for quizzes and assignments
         try:
-            from assignment_quiz_tables import Quiz, QuizAttempt, QuizStatus
+            from assignment_quiz_tables import Quiz, QuizAttempt, QuizStatus, Assignment, AssignmentSubmission, AssignmentStatus
             quizzes = db.query(Quiz).filter(
                 Quiz.session_id == session_id,
                 Quiz.session_type == session_type
             ).all()
             total_items += len(quizzes)
+            
+            assignments = db.query(Assignment).filter(
+                Assignment.session_id == session_id,
+                Assignment.session_type == session_type
+            ).all()
+            total_items += len(assignments)
         except ImportError:
             quizzes = []
+            assignments = []
             
         if total_items == 0:
             # If "Started" manually but no resources, keep it Started
@@ -259,8 +269,8 @@ def calculate_student_session_progress(db: Session, student_id: int, session_id:
             if view:
                 completed_items += 1
                 
-        # Check session contents
-        for content in session_contents:
+        # Check session contents (already filtered trackable ones)
+        for content in trackable_session_contents:
             if content.content_type in ["MATERIAL", "RESOURCE", "VIDEO"]:
                 view = db.query(ResourceView).filter(
                     ResourceView.student_id == student_id,
@@ -269,11 +279,9 @@ def calculate_student_session_progress(db: Session, student_id: int, session_id:
                 ).first()
                 if view:
                     completed_items += 1
-            elif content.content_type == "MEETING_LINK":
-                if current_status != "Not Started":
-                    completed_items += 1
             else:
-                if current_status != "Not Started":
+                # Other trackable types
+                if current_status != "Not Started" and current_status != "Staff View":
                     completed_items += 1
                     
         # Check quizzes
@@ -285,12 +293,22 @@ def calculate_student_session_progress(db: Session, student_id: int, session_id:
             ).first()
             if attempt:
                 completed_items += 1
+        
+        # Check assignments
+        for assignment in assignments:
+            submission = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == assignment.id,
+                AssignmentSubmission.student_id == student_id,
+                AssignmentSubmission.status.in_([AssignmentStatus.SUBMITTED, AssignmentStatus.EVALUATED])
+            ).first()
+            if submission:
+                completed_items += 1
                 
         completion_percentage = (completed_items / total_items) * 100
         
         # Session is "Started" if any resource is visible (handled by being at this point)
         # and specially if any item is completed
-        if completion_percentage >= 100:
+        if completion_percentage >= 99.9: # Use threshold for floats
             target_status = "Completed"
         elif completion_percentage > 0 or current_status == "Started":
             target_status = "Started"
@@ -667,6 +685,7 @@ async def get_student_dashboard(
                     "duration_weeks": course.duration_weeks,
                     "sessions_per_week": course.sessions_per_week,
                     "is_active": course.is_active,
+                    "banner_image": course.banner_image,
                     "progress": progress_pct,
                     "total_resources": total_res,
                     "completed_resources": completed_res,
@@ -743,6 +762,7 @@ async def get_student_dashboard(
                     "duration_weeks": cohort_course.duration_weeks,
                     "sessions_per_week": cohort_course.sessions_per_week,
                     "is_active": cohort_course.is_active,
+                    "banner_image": cohort_course.banner_image,
                     "progress": progress_pct,
                     "total_resources": total_res,
                     "completed_resources": completed_res,
@@ -998,6 +1018,7 @@ async def get_student_courses(
                 "duration_weeks": course.duration_weeks,
                 "sessions_per_week": course.sessions_per_week,
                 "is_active": course.is_active,
+                "banner_image": course.banner_image,
                 "enrolled": enrolled,
                 "is_cohort_assigned": True, 
                 "is_locked": not enrolled and payment_status == 'pending_payment',
@@ -1260,6 +1281,7 @@ async def get_enrolled_courses(
                     "duration_weeks": course.duration_weeks,
                     "sessions_per_week": course.sessions_per_week,
                     "is_active": course.is_active,
+                    "banner_image": course.banner_image,
                     "progress": progress_pct,
                     "total_resources": total_res,
                     "completed_resources": completed_res,
@@ -1293,6 +1315,7 @@ async def get_enrolled_courses(
                     "duration_weeks": cohort_course.duration_weeks,
                     "sessions_per_week": cohort_course.sessions_per_week,
                     "is_active": cohort_course.is_active,
+                    "banner_image": cohort_course.banner_image,
                     "progress": progress_pct,
                     "total_resources": total_res,
                     "completed_resources": completed_res,
@@ -1353,24 +1376,6 @@ async def get_student_course_modules(
                 ).first()
                 if enrollment and enrollment.payment_status == 'pending_payment':
                     raise HTTPException(status_code=402, detail="Payment required to access this course content")
-                
-                # Check if module is locked
-                if module.start_date and module.start_date > datetime.now():
-                    raise HTTPException(
-                        status_code=403, 
-                        detail=f"This module is locked until {module.start_date.strftime('%Y-%m-%d')}"
-                    )
-            
-            # Check if module is locked (for cohort-specific courses)
-            if is_cohort_course:
-                cohort_module_check = db.query(CohortCourseModule).filter(
-                    CohortCourseModule.course_id == course_id
-                ).first()
-                if cohort_module_check and cohort_module_check.start_date and cohort_module_check.start_date > datetime.now():
-                    raise HTTPException(
-                        status_code=403, 
-                        detail=f"This module is locked until {cohort_module_check.start_date.strftime('%Y-%m-%d')}"
-                    )
         else:
             # Staff has access to everything
             has_cohort_access = False
@@ -1690,6 +1695,14 @@ async def get_student_session(
                             QuizAttempt.quiz_id == q.id,
                             QuizAttempt.student_id == student_id
                         ).first()
+
+                    score = None
+                    if attempt and (attempt.status == QuizStatus.COMPLETED or attempt.status == "COMPLETED"):
+                        result = db.query(QuizResult).filter(
+                            QuizResult.attempt_id == attempt.id
+                        ).first()
+                        if result:
+                            score = result.marks_obtained
                         
                     quizzes_list.append({
                         "id": q.id,
@@ -1698,7 +1711,8 @@ async def get_student_session(
                         "time_limit": q.time_limit_minutes,
                         "total_marks": q.total_marks,
                         "attempted": attempt is not None,
-                        "status": attempt.status if attempt else "NOT_ATTEMPTED"
+                        "status": attempt.status if attempt else "NOT_ATTEMPTED",
+                        "score": score
                     })
             except ImportError:
                 pass
@@ -1824,6 +1838,14 @@ async def get_student_session(
                             QuizAttempt.quiz_id == q.id,
                             QuizAttempt.student_id == student_id
                         ).first()
+                    score = None
+                    if attempt and (attempt.status == QuizStatus.COMPLETED or attempt.status == "COMPLETED"):
+                        result = db.query(QuizResult).filter(
+                            QuizResult.attempt_id == attempt.id
+                        ).first()
+                        if result:
+                            score = result.marks_obtained
+
                     quizzes_list.append({
                         "id": q.id,
                         "title": q.title,
@@ -1831,7 +1853,8 @@ async def get_student_session(
                         "time_limit": q.time_limit_minutes,
                         "total_marks": q.total_marks,
                         "attempted": attempt is not None,
-                        "status": attempt.status if attempt else "NOT_ATTEMPTED"
+                        "status": attempt.status if attempt else "NOT_ATTEMPTED",
+                        "score": score
                     })
             except ImportError:
                 pass
@@ -2131,3 +2154,96 @@ async def get_student_quizzes(
     except Exception as e:
         logger.error(f"Get student quizzes error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch quizzes")
+
+
+@router.get("/student/meeting-links")
+async def get_student_meeting_links(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get meeting links from all courses the student is enrolled in"""
+    try:
+        from cohort_specific_models import CohortSpecificCourse, CohortCourseModule, CohortCourseSession, CohortSessionContent
+        enrollment_status = get_student_enrollment_status(db, current_user.id)
+        enrolled_regular_course_ids = enrollment_status["enrolled_regular_course_ids"]
+        enrolled_cohort_course_ids = enrollment_status["enrolled_cohort_course_ids"]
+
+        result = []
+
+        # Fetch meeting links from regular enrolled courses
+        for course_id in enrolled_regular_course_ids:
+            course = db.query(Course).filter(Course.id == course_id).first()
+            if not course:
+                continue
+            modules = db.query(Module).order_by(Module.week_number).filter(Module.course_id == course_id).all()
+            for module in modules:
+                sessions = db.query(SessionModel).filter(SessionModel.module_id == module.id).all()
+                for session in sessions:
+                    meetings = (
+                        db.query(SessionContent)
+                        .filter(
+                            SessionContent.session_id == session.id,
+                            SessionContent.content_type == "MEETING_LINK",
+                            SessionContent.meeting_url.isnot(None),
+                            SessionContent.meeting_url != ""
+                        )
+                        .all()
+                    )
+                    for m in meetings:
+                        result.append({
+                            "id": m.id,
+                            "title": m.title or session.title,
+                            "course_name": course.title,
+                            "week_number": module.week_number,
+                            "module_title": module.title,
+                            "session_title": session.title,
+                            "session_number": session.session_number,
+                            "meeting_url": m.meeting_url,
+                            "scheduled_time": m.scheduled_time.isoformat() if m.scheduled_time else None,
+                            "created_at": m.created_at.isoformat() if m.created_at else None,
+                        })
+
+        # Fetch meeting links from cohort-specific courses
+        if enrolled_cohort_course_ids:
+            cohort_courses = db.query(CohortSpecificCourse).filter(
+                CohortSpecificCourse.id.in_(enrolled_cohort_course_ids)
+            ).all()
+            for course in cohort_courses:
+                modules = db.query(CohortCourseModule).order_by(CohortCourseModule.week_number).filter(CohortCourseModule.course_id == course.id).all()
+                for module in modules:
+                    sessions = db.query(CohortCourseSession).filter(CohortCourseSession.module_id == module.id).all()
+                    for session in sessions:
+                        meetings = (
+                            db.query(CohortSessionContent)
+                            .filter(
+                                CohortSessionContent.session_id == session.id,
+                                CohortSessionContent.content_type == "MEETING_LINK",
+                                CohortSessionContent.meeting_url.isnot(None),
+                                CohortSessionContent.meeting_url != ""
+                            )
+                            .all()
+                        )
+                        for m in meetings:
+                            result.append({
+                                "id": f"cohort_{m.id}",
+                                "title": m.title or session.title,
+                                "course_name": course.title,
+                                "week_number": module.week_number,
+                                "module_title": module.title,
+                                "session_title": session.title,
+                                "session_number": session.session_number,
+                                "meeting_url": m.meeting_url,
+                                "scheduled_time": m.scheduled_time.isoformat() if m.scheduled_time else None,
+                                "created_at": m.created_at.isoformat() if m.created_at else None,
+                            })
+
+        # Sort: meetings with a scheduled_time first (soonest first), then by created_at
+        result.sort(key=lambda x: (
+            x["scheduled_time"] is None,
+            x["scheduled_time"] or x["created_at"] or ""
+        ))
+
+        return {"meetings": result, "total": len(result)}
+    except Exception as e:
+        logger.error(f"Get student meeting links error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch meeting links")

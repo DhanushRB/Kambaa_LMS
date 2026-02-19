@@ -43,7 +43,8 @@ async def create_global_course(
             is_active=is_active,
             approval_status=approval_status,
             payment_type=payment_type,
-            default_price=default_price
+            default_price=default_price,
+            banner_image=course_data.banner_image
         )
         db.add(course)
         db.commit()
@@ -219,6 +220,7 @@ async def get_global_courses(
                 "approval_status": course.approval_status,
                 "payment_type": course.payment_type,
                 "default_price": course.default_price,
+                "banner_image": course.banner_image,
                 "modules_count": modules_count,
                 "created_at": course.created_at,
                 "is_global": True,
@@ -290,6 +292,7 @@ async def get_global_course_details(
             "cohort_assignments": len(cohort_assignments),
             "payment_type": course.payment_type,
             "default_price": course.default_price,
+            "banner_image": course.banner_image,
             "assignments": [
                 {
                     "assignment_type": a.assignment_type,

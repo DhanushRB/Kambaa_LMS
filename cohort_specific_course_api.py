@@ -20,9 +20,9 @@ router = APIRouter(prefix="/cohorts", tags=["Cohort Courses"])
 class CohortCourseCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    duration_weeks: int = 12
     sessions_per_week: int = 2
     is_active: bool = True
+    banner_image: Optional[str] = None
 
 class CohortCourseUpdate(BaseModel):
     title: Optional[str] = None
@@ -30,6 +30,7 @@ class CohortCourseUpdate(BaseModel):
     num_modules: Optional[int] = None
     sessions_per_module: Optional[int] = None
     is_active: Optional[bool] = None
+    banner_image: Optional[str] = None
 
 class CohortCourseModuleUpdate(BaseModel):
     title: Optional[str] = None
@@ -59,6 +60,7 @@ async def create_cohort_course(
             duration_weeks=course_data.duration_weeks,
             sessions_per_week=course_data.sessions_per_week,
             is_active=course_data.is_active,
+            banner_image=course_data.banner_image,
             created_by=None  # Set to None to avoid foreign key constraint with presenters
         )
         db.add(course)
@@ -169,6 +171,7 @@ async def get_cohort_courses(
                 "num_modules": course.duration_weeks,  # Map duration_weeks back to num_modules
                 "sessions_per_module": course.sessions_per_week,  # Map sessions_per_week back to sessions_per_module
                 "is_active": course.is_active,
+                "banner_image": course.banner_image,
                 "modules_count": modules_count,
                 "created_at": course.created_at,
                 "cohort_id": cohort_id,
@@ -221,6 +224,7 @@ async def get_cohort_course_details(
             "duration_weeks": course.duration_weeks,
             "sessions_per_week": course.sessions_per_week,
             "is_active": course.is_active,
+            "banner_image": course.banner_image,
             "modules_count": modules_count,
             "created_at": course.created_at,
             "cohort_id": cohort_id

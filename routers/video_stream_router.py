@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.orm import Session
 from database import get_db, Resource
+from resource_analytics_models import ResourceView
 from auth import get_current_user_any_role, SECRET_KEY, ALGORITHM
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
@@ -41,6 +42,7 @@ def verify_video_token(token: str, resource_id: int):
 @router.post("/{resource_id}/token")
 async def get_video_stream_token(
     resource_id: int,
+    request: Request,
     source: str = "resource",
     current_user = Depends(get_current_user_any_role),
     db: Session = Depends(get_db)
@@ -67,6 +69,27 @@ async def get_video_stream_token(
     user_id = current_user.get("id")
     role = current_user.get("role")
     token = create_video_token(resource_id, user_id, role, source)
+    
+    # Track the view automatically
+    try:
+        client_ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("user-agent", "")
+        
+        view_record = ResourceView(
+            resource_id=resource_id,
+            student_id=user_id,
+            viewed_at=datetime.utcnow(),
+            ip_address=client_ip,
+            user_agent=user_agent,
+            resource_type="COHORT_RESOURCE" if source == "cohort" else "RESOURCE"
+        )
+        
+        db.add(view_record)
+        db.commit()
+        logger.info(f"Video view tracked: resource={resource_id}, user={user_id}")
+    except Exception as e:
+        logger.error(f"Error tracking video view: {str(e)}")
+        db.rollback()
     
     return {"token": token, "resource_id": resource_id}
 

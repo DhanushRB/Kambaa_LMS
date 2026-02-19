@@ -478,6 +478,76 @@ async def get_admin_recent_activity(
         logger.error(f"Admin recent activity error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch recent activity")
 
+@router.get("/admin/recent-meeting-links")
+async def get_recent_meeting_links(
+    current_admin = Depends(get_current_admin_or_presenter),
+    db: Session = Depends(get_db)
+):
+    """Get the most recent meeting links across all sessions for admin dashboard"""
+    try:
+        # Fetch regular meeting links
+        regular_rows = (
+            db.query(SessionContent, SessionModel.title.label("session_title"))
+            .join(SessionModel, SessionContent.session_id == SessionModel.id)
+            .filter(
+                SessionContent.content_type == "MEETING_LINK",
+                SessionContent.meeting_url.isnot(None),
+                SessionContent.meeting_url != ""
+            )
+            .order_by(SessionContent.created_at.desc())
+            .limit(10)
+            .all()
+        )
+
+        # Fetch cohort-specific meeting links
+        cohort_rows = (
+            db.query(CohortSessionContent, CohortCourseSession.title.label("session_title"))
+            .join(CohortCourseSession, CohortSessionContent.session_id == CohortCourseSession.id)
+            .filter(
+                CohortSessionContent.content_type == "MEETING_LINK",
+                CohortSessionContent.meeting_url.isnot(None),
+                CohortSessionContent.meeting_url != ""
+            )
+            .order_by(CohortSessionContent.created_at.desc())
+            .limit(10)
+            .all()
+        )
+
+        result = []
+        for content, session_title in regular_rows:
+            result.append({
+                "id": content.id,
+                "title": content.title or "Meeting Link",
+                "session_title": session_title,
+                "meeting_url": content.meeting_url,
+                "scheduled_time": content.scheduled_time.isoformat() if content.scheduled_time else None,
+                "created_at": content.created_at.isoformat() if content.created_at else None,
+                "content_type": content.content_type,
+                "is_cohort_specific": False
+            })
+
+        for content, session_title in cohort_rows:
+            result.append({
+                "id": f"cohort_{content.id}",
+                "title": content.title or "Meeting Link",
+                "session_title": session_title,
+                "meeting_url": content.meeting_url,
+                "scheduled_time": content.scheduled_time.isoformat() if content.scheduled_time else None,
+                "created_at": content.created_at.isoformat() if content.created_at else None,
+                "content_type": content.content_type,
+                "is_cohort_specific": True
+            })
+
+        # Sort combined results by created_at desc and limit to 10
+        result.sort(key=lambda x: x["created_at"] or "", reverse=True)
+        result = result[:10]
+
+        return {"meetings": result}
+    except Exception as e:
+        logger.error(f"Get recent meeting links error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch meeting links")
+
+
 def format_time_ago(time_diff):
     """Format time difference to human readable string"""
     days = time_diff.days

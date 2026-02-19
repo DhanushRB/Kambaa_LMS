@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from database import get_db, Resource
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api", tags=["file_serving"])
 UPLOAD_BASE_DIR = Path("uploads")
 
 @router.get("/resources/{filename}")
-async def serve_resource(filename: str, request: Request, db: Session = get_db):
+async def serve_resource(filename: str, request: Request, db: Session = Depends(get_db)):
     """Serve uploaded resource files with proper content types for browser viewing"""
     file_path = UPLOAD_BASE_DIR / "resources" / filename
     if file_path.exists():
@@ -108,7 +108,7 @@ async def serve_resource(filename: str, request: Request, db: Session = get_db):
 async def view_resource_authenticated(
     resource_id: int,
     token: Optional[str] = None,
-    db: Session = get_db
+    db: Session = Depends(get_db)
 ):
     """View a specific resource file with authentication"""
     try:
@@ -210,3 +210,29 @@ async def serve_certificate(filename: str):
             
         return FileResponse(file_path, media_type=media_type, headers=headers)
     raise HTTPException(status_code=404, detail="Certificate not found")
+
+@router.get("/course-banners/{filename}")
+async def serve_course_banner(filename: str):
+    """Serve course banner images"""
+    file_path = UPLOAD_BASE_DIR / "course_banners" / filename
+    if file_path.exists():
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        headers = {
+            "Content-Disposition": "inline; filename=\"" + filename + "\"",
+            "Cache-Control": "public, max-age=86400" # 24 hours
+        }
+        
+        if file_ext in [".jpg", ".jpeg"]:
+            media_type = "image/jpeg"
+        elif file_ext == ".png":
+            media_type = "image/png"
+        elif file_ext == ".gif":
+            media_type = "image/gif"
+        elif file_ext == ".webp":
+            media_type = "image/webp"
+        else:
+            media_type = "image/jpeg"
+            
+        return FileResponse(file_path, media_type=media_type, headers=headers)
+    raise HTTPException(status_code=404, detail="Banner not found")

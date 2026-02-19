@@ -16,6 +16,7 @@ class CohortCourseCreate(BaseModel):
     duration_weeks: Optional[int] = 12
     sessions_per_week: Optional[int] = 2
     is_active: Optional[bool] = True
+    banner_image: Optional[str] = None
 
 async def create_cohort_course(
     cohort_id: int,
@@ -46,6 +47,7 @@ async def create_cohort_course(
             duration_weeks=duration_weeks,
             sessions_per_week=sessions_per_week,
             is_active=is_active,
+            banner_image=course_data.banner_image,
             created_at=datetime.utcnow()
         )
         db.add(course)
@@ -128,6 +130,7 @@ async def get_cohort_courses(
                 "duration_weeks": course.duration_weeks,
                 "sessions_per_week": course.sessions_per_week,
                 "is_active": course.is_active,
+                "banner_image": course.banner_image,
                 "modules_count": modules_count,
                 "assigned_at": cohort_course.assigned_at if cohort_course else None,
                 "created_at": course.created_at,
@@ -196,6 +199,7 @@ async def get_cohort_course_details(
             "duration_weeks": course.duration_weeks,
             "sessions_per_week": course.sessions_per_week,
             "is_active": course.is_active,
+            "banner_image": course.banner_image,
             "created_at": course.created_at,
             "assigned_at": cohort_course.assigned_at,
             "cohort_id": cohort_id,
@@ -240,6 +244,7 @@ async def update_cohort_course(
         course.duration_weeks = course_data.duration_weeks
         course.sessions_per_week = course_data.sessions_per_week
         course.is_active = course_data.is_active
+        course.banner_image = course_data.banner_image
         
         db.commit()
         

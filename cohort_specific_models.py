@@ -14,6 +14,7 @@ class CohortSpecificCourse(Base):
     duration_weeks = Column(Integer, default=12)
     sessions_per_week = Column(Integer, default=2)
     is_active = Column(Boolean, default=True)
+    banner_image = Column(String(500), nullable=True)
     created_by = Column(Integer, ForeignKey("admins.id"))
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     

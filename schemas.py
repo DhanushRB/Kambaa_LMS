@@ -54,6 +54,7 @@ class CourseUpdate(BaseModel):
     is_active: Optional[bool] = None
     payment_type: Optional[str] = Field(None, pattern="^(free|paid)$")
     default_price: Optional[float] = Field(None, ge=0)
+    banner_image: Optional[str] = None
     assignments: Optional[List[CourseAssignmentCreate]] = None
 
 class CourseCreate(BaseModel):
@@ -64,6 +65,7 @@ class CourseCreate(BaseModel):
     is_active: bool = Field(default=True)
     payment_type: str = Field(default='free', pattern="^(free|paid)$")
     default_price: float = Field(default=0.0, ge=0)
+    banner_image: Optional[str] = None
     assignments: List[CourseAssignmentCreate] = []
 
 class CourseAutoSetup(BaseModel):
