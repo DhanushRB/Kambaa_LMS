@@ -20,10 +20,9 @@ except ImportError:
     # Fallback to assignment_quiz_tables if models not available
     from assignment_quiz_tables import (
         Assignment, AssignmentSubmission, AssignmentGrade,
-        Quiz, QuizQuestion, QuizAttempt, QuizAnswer, QuizResult,
-        SubmissionType, QuestionType, AssignmentStatus, QuizStatus
     )
 from auth import get_current_admin, get_current_presenter, get_current_mentor, get_current_user, get_current_admin_or_presenter
+from logging_utils import log_student_action
 
 router = APIRouter(prefix="/assignments-quizzes", tags=["Assignments & Quizzes"])
 
@@ -600,6 +599,20 @@ async def submit_assignment(
             db.add(submission)
         db.commit()
         db.refresh(submission)
+
+        db.commit()
+        db.refresh(submission)
+
+        # Log student action
+        log_student_action(
+            student_id=current_user.id,
+            student_username=current_user.username,
+            action_type="SUBMIT",
+            resource_type="ASSIGNMENT",
+            resource_id=assignment.id,
+            details=f"Submitted assignment: {assignment.title} (ID: {assignment.id})",
+            ip_address=None # IP not readily available in this scope, could be added to Depends
+        )
 
         return {
             "message": "Assignment submitted successfully",

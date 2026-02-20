@@ -2,9 +2,12 @@ from fastapi import APIRouter, HTTPException, Depends, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from typing import Optional
-from database import get_db, Admin, Presenter, Manager, AdminLog, PresenterLog, MentorLog, StudentLog
+from database import get_db, Admin, Presenter, Manager, AdminLog, PresenterLog, MentorLog, StudentLog, EmailLog, User
+from resource_analytics_models import ResourceView
 from auth import get_current_admin_or_presenter, verify_password, get_password_hash
 from schemas import AdminCreate, PresenterCreate, ChangePasswordRequest
+from utils.user_utils import check_email_exists, validate_email_zerobounce, normalize_email
+
 import logging
 import csv
 import io
@@ -242,11 +245,20 @@ async def create_admin(
     db: Session = Depends(get_db)
 ):
     try:
+        normalized_email = normalize_email(admin_data.email)
+        
+        # Unified duplicate check
+        db_check = check_email_exists(normalized_email, db)
+        if db_check["exists"]:
+            raise HTTPException(status_code=400, detail=f"Email already exists (Role: {db_check['role']})")
+        
+        # ZeroBounce validation
+        zb_check = validate_email_zerobounce(normalized_email)
+        if not zb_check["valid"]:
+            raise HTTPException(status_code=400, detail=f"Email validation failed: {zb_check['message']}")
+
         if db.query(Admin).filter(Admin.username == admin_data.username).first():
             raise HTTPException(status_code=400, detail="Username already exists")
-        
-        if db.query(Admin).filter(Admin.email == admin_data.email).first():
-            raise HTTPException(status_code=400, detail="Email already exists")
         
         hashed_password = get_password_hash(admin_data.password)
         admin = Admin(
@@ -273,11 +285,20 @@ async def create_presenter(
     db: Session = Depends(get_db)
 ):
     try:
+        normalized_email = normalize_email(presenter_data.email)
+        
+        # Unified duplicate check
+        db_check = check_email_exists(normalized_email, db)
+        if db_check["exists"]:
+            raise HTTPException(status_code=400, detail=f"Email already exists (Role: {db_check['role']})")
+        
+        # ZeroBounce validation
+        zb_check = validate_email_zerobounce(normalized_email)
+        if not zb_check["valid"]:
+            raise HTTPException(status_code=400, detail=f"Email validation failed: {zb_check['message']}")
+
         if db.query(Presenter).filter(Presenter.username == presenter_data.username).first():
             raise HTTPException(status_code=400, detail="Username already exists")
-        
-        if db.query(Presenter).filter(Presenter.email == presenter_data.email).first():
-            raise HTTPException(status_code=400, detail="Email already exists")
         
         hashed_password = get_password_hash(presenter_data.password)
         presenter = Presenter(
@@ -304,11 +325,20 @@ async def create_manager(
     db: Session = Depends(get_db)
 ):
     try:
+        normalized_email = normalize_email(manager_data.email)
+        
+        # Unified duplicate check
+        db_check = check_email_exists(normalized_email, db)
+        if db_check["exists"]:
+            raise HTTPException(status_code=400, detail=f"Email already exists (Role: {db_check['role']})")
+        
+        # ZeroBounce validation
+        zb_check = validate_email_zerobounce(normalized_email)
+        if not zb_check["valid"]:
+            raise HTTPException(status_code=400, detail=f"Email validation failed: {zb_check['message']}")
+
         if db.query(Manager).filter(Manager.username == manager_data.username).first():
             raise HTTPException(status_code=400, detail="Username already exists")
-        
-        if db.query(Manager).filter(Manager.email == manager_data.email).first():
-            raise HTTPException(status_code=400, detail="Email already exists")
         
         hashed_password = get_password_hash(manager_data.password)
         manager = Manager(
@@ -415,7 +445,7 @@ async def get_presenter_logs(
                 "resource_id": log.resource_id,
                 "details": log.details,
                 "ip_address": log.ip_address,
-                "timestamp": log.timestamp
+                "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
             })
         
         return {"logs": logs_data}
@@ -443,13 +473,13 @@ async def test_logs(
                 "id": log.id,
                 "username": log.admin_username,
                 "action": log.action_type,
-                "timestamp": str(log.timestamp)
+                "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
             } for log in admin_logs],
             "sample_presenter_logs": [{
                 "id": log.id,
                 "username": log.presenter_username,
                 "action": log.action_type,
-                "timestamp": str(log.timestamp)
+                "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
             } for log in presenter_logs]
         }
     except Exception as e:
@@ -530,7 +560,7 @@ async def get_all_system_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get presenter logs
@@ -564,7 +594,7 @@ async def get_all_system_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get mentor logs
@@ -598,7 +628,7 @@ async def get_all_system_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get student logs
@@ -632,7 +662,74 @@ async def get_all_system_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
+                })
+        
+        # Get email logs
+        email_query = db.query(EmailLog)
+        if date_from:
+            email_query = email_query.filter(EmailLog.created_at >= date_from)
+        if date_to:
+            email_query = email_query.filter(EmailLog.created_at <= date_to)
+        if search:
+            email_query = email_query.filter(
+                or_(
+                    EmailLog.email.contains(search),
+                    EmailLog.subject.contains(search),
+                    EmailLog.status.contains(search)
+                )
+            )
+            
+        if not user_type or user_type == "System":
+            email_logs = email_query.all()
+            for log in email_logs:
+                all_logs.append({
+                    "id": f"email_{log.id}",
+                    "user_type": "System",
+                    "user_id": log.user_id,
+                    "username": log.email,
+                    "action_type": "EMAIL_SENT" if log.status == "sent" else "EMAIL_FAILED",
+                    "resource_type": "EMAIL",
+                    "resource_id": log.id,
+                    "details": f"Subject: {log.subject} (Status: {log.status})",
+                    "ip_address": None,
+                    "timestamp": log.created_at.isoformat() + "Z" if log.created_at else None
+                })
+
+        # Get resource view logs (Student activity)
+        view_query = db.query(ResourceView)
+        if date_from:
+            view_query = view_query.filter(ResourceView.viewed_at >= date_from)
+        if date_to:
+            view_query = view_query.filter(ResourceView.viewed_at <= date_to)
+        if search:
+            # We need to join with User to search by username
+            view_query = view_query.join(User, ResourceView.student_id == User.id).filter(
+                or_(
+                    User.username.contains(search),
+                    ResourceView.resource_type.contains(search)
+                )
+            )
+        
+        if not user_type or user_type == "Student":
+            # Avoid duplicate student logs if user_type is Student, 
+            # but ResourceView is a different kind of activity.
+            # I'll label them as UserType: Student, Action: VIEW
+            view_logs = view_query.all()
+            for log in view_logs:
+                # Get username for the log
+                user_obj = db.query(User).filter(User.id == log.student_id).first()
+                all_logs.append({
+                    "id": f"view_{log.id}",
+                    "user_type": "Student",
+                    "user_id": log.student_id,
+                    "username": user_obj.username if user_obj else f"User {log.student_id}",
+                    "action_type": "VIEW",
+                    "resource_type": log.resource_type or "RESOURCE",
+                    "resource_id": log.resource_id,
+                    "details": f"Viewed {log.resource_type or 'resource'} (ID: {log.resource_id})",
+                    "ip_address": log.ip_address,
+                    "timestamp": log.viewed_at.isoformat() + "Z" if log.viewed_at else None
                 })
         
         # Sort by timestamp (most recent first)
@@ -702,7 +799,7 @@ async def export_all_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get presenter logs
@@ -736,7 +833,7 @@ async def export_all_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get mentor logs
@@ -770,7 +867,7 @@ async def export_all_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Get student logs
@@ -804,7 +901,7 @@ async def export_all_logs(
                     "resource_id": log.resource_id,
                     "details": log.details,
                     "ip_address": log.ip_address,
-                    "timestamp": log.timestamp
+                    "timestamp": log.timestamp.isoformat() + "Z" if log.timestamp else None
                 })
         
         # Sort by timestamp (most recent first)

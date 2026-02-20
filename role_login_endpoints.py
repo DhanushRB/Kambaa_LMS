@@ -8,7 +8,7 @@ from auth import verify_password, create_access_token_with_session, ACCESS_TOKEN
 import logging
 
 import logging
-from main import log_admin_action, log_presenter_action, log_student_action, log_mentor_action
+from logging_utils import log_admin_action, log_presenter_action, log_student_action, log_mentor_action
 
 logger = logging.getLogger(__name__)
 

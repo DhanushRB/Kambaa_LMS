@@ -202,7 +202,7 @@ async def create_file_link_resource(
         
         # Log the action
         try:
-            from main import log_admin_action, log_presenter_action
+            from logging_utils import log_admin_action, log_presenter_action
             from database import Admin, Presenter
             
             if db.query(Admin).filter(Admin.id == current_user.id).first():

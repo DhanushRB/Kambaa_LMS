@@ -255,3 +255,18 @@ class ProgressUpdate(BaseModel):
     student_id: int
     course_id: int
     progress_percentage: float = Field(..., ge=0, le=100)
+
+class EmailAnalysisResult(BaseModel):
+    email: str
+    is_duplicate: bool
+    role: Optional[str] = None
+    zb_status: Optional[str] = None
+    zb_valid: bool = True
+    message: Optional[str] = None
+
+class DuplicateAnalysisResponse(BaseModel):
+    total_checked: int
+    duplicates_found: int
+    invalid_found: int
+    results: List[EmailAnalysisResult]
+

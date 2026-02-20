@@ -5,7 +5,9 @@ from sqlalchemy import or_
 from typing import Optional
 from database import get_db, User, Admin, Presenter, Manager, Mentor
 from auth import get_current_admin_or_presenter, get_password_hash
-from schemas import UserCreate, UserUpdate
+from schemas import UserCreate, UserUpdate, EmailAnalysisResult, DuplicateAnalysisResponse
+from utils.user_utils import check_email_exists, validate_email_zerobounce, normalize_email
+
 import logging
 import csv
 import io
@@ -17,8 +19,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["user_management"])
 
 # Import logging functions
-from main import log_admin_action
+from logging_utils import log_admin_action
 
+# Download CSV template for bulk user upload
 @router.get("/users/bulk-upload-template")
 async def download_bulk_upload_template():
     """Download CSV template for bulk user upload"""
@@ -32,7 +35,81 @@ async def download_bulk_upload_template():
     else:
         raise HTTPException(status_code=404, detail="Template file not found")
 
+@router.post("/users/analyze-emails", response_model=DuplicateAnalysisResponse)
+async def analyze_emails_endpoint(
+    file: UploadFile = File(...),
+    current_admin = Depends(get_current_admin_or_presenter),
+    db: Session = Depends(get_db)
+):
+    """
+    Analyze a list of emails from a file for duplicates and ZeroBounce validity.
+    """
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="File is empty")
+            
+        if file.filename.lower().endswith('.csv'):
+            try:
+                df = pd.read_csv(io.BytesIO(content), encoding='utf-8')
+            except UnicodeDecodeError:
+                df = pd.read_csv(io.BytesIO(content), encoding='latin-1')
+        elif file.filename.lower().endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            raise HTTPException(status_code=400, detail="Invalid file format. Please upload CSV or Excel.")
+
+        # Support case-insensitive 'email' column
+        df.columns = df.columns.str.lower().str.strip()
+        if 'email' not in df.columns:
+            raise HTTPException(status_code=400, detail=f"File must contain an 'email' column. Found: {list(df.columns)}")
+
+        emails = df['email'].dropna().unique().tolist()
+        results = []
+        duplicates_found = 0
+        invalid_found = 0
+
+        for email in emails:
+            email_str = str(email).strip()
+            normalized_email = normalize_email(email_str)
+            if not normalized_email:
+                continue
+                
+            # Check DB
+            db_check = check_email_exists(normalized_email, db)
+            
+            # ZeroBounce Check
+            zb_check = validate_email_zerobounce(normalized_email)
+            
+            is_dup = db_check["exists"]
+            is_valid = zb_check["valid"]
+            
+            if is_dup: duplicates_found += 1
+            if not is_valid: invalid_found += 1
+            
+            results.append(EmailAnalysisResult(
+                email=email_str,
+                is_duplicate=is_dup,
+                role=db_check["role"],
+                zb_status=zb_check["status"],
+                zb_valid=is_valid,
+                message=zb_check["message"]
+            ))
+
+        return DuplicateAnalysisResponse(
+            total_checked=len(results),
+            duplicates_found=duplicates_found,
+            invalid_found=invalid_found,
+            results=results
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Analyze emails error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/users/bulk-upload")
+
 async def bulk_upload_users(
     file: UploadFile = File(...),
     current_admin = Depends(get_current_admin_or_presenter),
@@ -117,10 +194,20 @@ async def bulk_upload_users(
                     continue
                 
                 # Check if email already exists (allow duplicate usernames)
-                if db.query(User).filter(User.email == email).first():
-                    errors.append(f"Row {index + 2}: Email '{email}' already exists")
+                normalized_email = normalize_email(email)
+                db_check = check_email_exists(normalized_email, db)
+                if db_check["exists"]:
+                    errors.append(f"Row {index + 2}: Email '{email}' already exists (Role: {db_check['role']})")
                     error_count += 1
                     continue
+                
+                # ZeroBounce validation
+                zb_check = validate_email_zerobounce(normalized_email)
+                if not zb_check["valid"]:
+                    errors.append(f"Row {index + 2}: Email validation failed for '{email}': {zb_check['message']}")
+                    error_count += 1
+                    continue
+
                 
                 # Create user
                 hashed_password = get_password_hash(password)
@@ -188,6 +275,17 @@ async def bulk_upload_users(
         if success_count > 0:
             db.commit()
             logger.info(f"Bulk upload completed: {success_count} success, {error_count} errors")
+            
+            # Log the bulk upload action
+            if hasattr(current_admin, 'username'):
+                log_admin_action(
+                    admin_id=current_admin.id,
+                    admin_username=current_admin.username,
+                    action_type="BULK_IMPORT",
+                    resource_type="USER",
+                    resource_id=None,
+                    details=f"Bulk imported {success_count} users ({error_count} errors)"
+                )
         else:
             db.rollback()
             logger.warning("No users were created due to errors")
@@ -209,9 +307,18 @@ async def bulk_upload_users(
 @router.post("/users")
 async def create_user(user_data: UserCreate, current_admin = Depends(get_current_admin_or_presenter), db: Session = Depends(get_db)):
     try:
-        # Allow duplicate usernames; enforce unique email only
-        if db.query(User).filter(User.email == user_data.email).first():
-            raise HTTPException(status_code=400, detail="Email already exists")
+        normalized_email = normalize_email(user_data.email)
+        
+        # Unified duplicate check
+        db_check = check_email_exists(normalized_email, db)
+        if db_check["exists"]:
+            raise HTTPException(status_code=400, detail=f"Email already exists (Role: {db_check['role']})")
+        
+        # ZeroBounce validation
+        zb_check = validate_email_zerobounce(normalized_email)
+        if not zb_check["valid"]:
+            raise HTTPException(status_code=400, detail=f"Email validation failed: {zb_check['message']}")
+
         
         hashed_password = get_password_hash(user_data.password)
         
@@ -390,6 +497,18 @@ async def update_user(
             setattr(user, field, value)
         
         db.commit()
+        
+        # Log user update
+        if hasattr(current_admin, 'username'):
+            log_admin_action(
+                admin_id=current_admin.id,
+                admin_username=current_admin.username,
+                action_type="UPDATE",
+                resource_type="USER",
+                resource_id=user_id,
+                details=f"Updated user profile for: {user.username} (ID: {user_id})"
+            )
+            
         return {"message": "User updated successfully"}
     except HTTPException:
         raise

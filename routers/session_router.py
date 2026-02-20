@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["session_management"])
 
 # Import logging functions
-from main import log_admin_action, log_presenter_action
+from logging_utils import log_admin_action, log_presenter_action
 
 class SessionCreate(BaseModel):
     module_id: int

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from database import get_db, User, Admin, Presenter, Course, Module, Session as SessionModel, Enrollment, Cohort, UserCohort, CohortCourse, PresenterCohort, Resource
+from database import get_db, User, Admin, Presenter, Course, Module, Session as SessionModel, Enrollment, Cohort, UserCohort, CohortCourse, PresenterCohort, Resource, StudentSessionStatus, StudentModuleStatus, Attendance
 from auth import get_current_presenter
 from datetime import datetime
 import logging
@@ -94,9 +94,9 @@ async def get_presenter_dashboard(
                     "total_quizzes": 0
                 },
                 "performance": {
-                    "attendance_rate": 85.0,
-                    "completion_rate": 78.0,
-                    "average_quiz_score": 82.5,
+                    "attendance_rate": round(db.query(func.avg(StudentSessionStatus.progress_percentage)).scalar() or 0, 2),
+                    "completion_rate": round(db.query(func.avg(StudentModuleStatus.progress_percentage)).scalar() or 0, 2),
+                    "average_quiz_score": 0, # Placeholder until quizzes integrated
                     "target_attendance": 80.0,
                     "target_completion": 90.0,
                     "target_quiz_score": 75.0
@@ -177,9 +177,9 @@ async def get_presenter_dashboard(
                 "total_quizzes": 0
             },
             "performance": {
-                "attendance_rate": 85.0,
-                "completion_rate": 78.0,
-                "average_quiz_score": 82.5,
+                "attendance_rate": round(db.query(func.avg(StudentSessionStatus.progress_percentage)).join(UserCohort, StudentSessionStatus.student_id == UserCohort.user_id).filter(UserCohort.cohort_id.in_(assigned_cohort_ids)).scalar() or 0, 2),
+                "completion_rate": round(db.query(func.avg(StudentModuleStatus.progress_percentage)).join(UserCohort, StudentModuleStatus.student_id == UserCohort.user_id).filter(UserCohort.cohort_id.in_(assigned_cohort_ids)).scalar() or 0, 2),
+                "average_quiz_score": 0,
                 "target_attendance": 80.0,
                 "target_completion": 90.0,
                 "target_quiz_score": 75.0

@@ -16,7 +16,7 @@ class UserLogin(BaseModel):
     role: str = Field(..., pattern="^(Student)$")
 
 # Import logging functions
-from main import log_admin_action, log_presenter_action, log_student_action
+from logging_utils import log_admin_action, log_presenter_action, log_student_action
 
 @router.post("/login")
 async def login(user_data: UserLogin, request: Request, db: Session = Depends(get_db)):
@@ -30,6 +30,22 @@ async def login(user_data: UserLogin, request: Request, db: Session = Depends(ge
         ).first()
         
         if not user or not verify_password(user_data.password, user.password_hash):
+            # Log failed login attempt
+            try:
+                from database import AdminLog # Fallback to admin log for security events
+                log_entry = AdminLog(
+                    admin_id=None,
+                    admin_username=user_data.username,
+                    action_type="LOGIN_FAILED",
+                    resource_type="STUDENT_SESSION",
+                    details=f"Failed student login attempt for username: {user_data.username}",
+                    ip_address=request.client.host if request.client else "127.0.0.1"
+                )
+                db.add(log_entry)
+                db.commit()
+            except Exception as log_err:
+                logger.error(f"Failed to log security event: {str(log_err)}")
+                
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -59,7 +75,7 @@ async def login(user_data: UserLogin, request: Request, db: Session = Depends(ge
         raise
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/admin/login")
 async def admin_login(admin_data: AdminLogin, request: Request, db: Session = Depends(get_db)):
@@ -69,6 +85,19 @@ async def admin_login(admin_data: AdminLogin, request: Request, db: Session = De
         ).first()
         
         if not admin or not verify_password(admin_data.password, admin.password_hash):
+            # Log failed login attempt
+            try:
+                log_admin_action(
+                    admin_id=None,
+                    admin_username=admin_data.username,
+                    action_type="LOGIN_FAILED",
+                    resource_type="ADMIN_SESSION",
+                    details=f"Failed admin login attempt for username: {admin_data.username}",
+                    ip_address=request.client.host if request.client else "127.0.0.1"
+                )
+            except Exception as log_err:
+                logger.error(f"Failed to log security event: {str(log_err)}")
+                
             raise HTTPException(status_code=401, detail="Invalid admin credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -96,7 +125,7 @@ async def admin_login(admin_data: AdminLogin, request: Request, db: Session = De
         }
     except Exception as e:
         logger.error(f"Admin login error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/presenter/login")
 async def presenter_login(presenter_data: AdminLogin, request: Request, db: Session = Depends(get_db)):
@@ -106,6 +135,19 @@ async def presenter_login(presenter_data: AdminLogin, request: Request, db: Sess
         ).first()
         
         if not presenter or not verify_password(presenter_data.password, presenter.password_hash):
+            # Log failed login attempt
+            try:
+                log_presenter_action(
+                    presenter_id=None,
+                    presenter_username=presenter_data.username,
+                    action_type="LOGIN_FAILED",
+                    resource_type="PRESENTER_SESSION",
+                    details=f"Failed presenter login attempt for username: {presenter_data.username}",
+                    ip_address=request.client.host if request.client else "127.0.0.1"
+                )
+            except Exception as log_err:
+                logger.error(f"Failed to log security event: {str(log_err)}")
+                
             raise HTTPException(status_code=401, detail="Invalid presenter credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -143,6 +185,19 @@ async def manager_login(manager_data: AdminLogin, request: Request, db: Session 
         ).first()
         
         if not manager or not verify_password(manager_data.password, manager.password_hash):
+            # Log failed login attempt
+            try:
+                log_admin_action(
+                    admin_id=None,
+                    admin_username=manager_data.username,
+                    action_type="LOGIN_FAILED",
+                    resource_type="MANAGER_SESSION",
+                    details=f"Failed manager login attempt for username: {manager_data.username}",
+                    ip_address=request.client.host if request.client else "127.0.0.1"
+                )
+            except Exception as log_err:
+                logger.error(f"Failed to log security event: {str(log_err)}")
+                
             raise HTTPException(status_code=401, detail="Invalid manager credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

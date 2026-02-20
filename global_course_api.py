@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/courses", tags=["Global Courses"])
 
 # Import logging functions
-from main import log_admin_action, log_presenter_action
+from logging_utils import log_admin_action, log_presenter_action
 
 @router.post("/")
 async def create_global_course(

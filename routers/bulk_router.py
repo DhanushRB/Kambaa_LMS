@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, R
 from sqlalchemy.orm import Session
 from database import get_db, User
 from auth import get_current_admin_or_presenter, get_password_hash
+from utils.user_utils import check_email_exists, validate_email_zerobounce, normalize_email
+
 import csv
 import io
 import os
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["bulk_operations"])
 
 # Import logging functions
-from main import log_admin_action
+from logging_utils import log_admin_action, log_presenter_action
 
 @router.get("/download-student-template")
 async def download_student_template(
@@ -241,9 +243,18 @@ async def bulk_upload_users(
                     errors.append(f"Row {row_num}: Username '{username}' already exists")
                     continue
                 
-                if db.query(User).filter(User.email == email).first():
-                    errors.append(f"Row {row_num}: Email '{email}' already exists")
+                normalized_email = normalize_email(email)
+                db_check = check_email_exists(normalized_email, db)
+                if db_check["exists"]:
+                    errors.append(f"Row {row_num}: Email '{email}' already exists (Role: {db_check['role']})")
                     continue
+                
+                # ZeroBounce validation
+                zb_check = validate_email_zerobounce(normalized_email)
+                if not zb_check["valid"]:
+                    errors.append(f"Row {row_num}: Email validation failed for '{email}': {zb_check['message']}")
+                    continue
+
                 
                 # Faculty-specific validation
                 if user_type_filter == 'Faculty':

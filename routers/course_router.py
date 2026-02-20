@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["course_management"])
 
 # Import logging functions
-from main import log_admin_action, log_presenter_action
+from logging_utils import log_admin_action, log_presenter_action
 
 @router.post("/courses")
 async def create_course(

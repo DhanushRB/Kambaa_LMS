@@ -4,8 +4,8 @@ from sqlalchemy import func, and_, or_
 from database import (
     get_db, User, Admin, Presenter, Manager, Course, Module, Session as SessionModel,
     Enrollment, Attendance, Resource, Certificate,
-    Enrollment, Attendance, Resource, Certificate,
-    Cohort, UserCohort, CohortCourse, PresenterCohort, CohortSpecificCourse
+    Cohort, UserCohort, CohortCourse, PresenterCohort, CohortSpecificCourse,
+    StudentSessionStatus, StudentModuleStatus
 )
 from auth import get_current_admin_or_presenter, get_current_presenter
 from typing import Optional
@@ -44,10 +44,39 @@ async def get_admin_analytics(
         total_modules = db.query(Module).count()
         total_sessions = db.query(SessionModel).count()
         
-        # Enrollment statistics
+        # Enrollment and Progress statistics
+        # Since the Enrollment table is often empty but progress is tracked in StudentStatus tables
+        total_students_eligible = total_students
+        
+        # Count students who have actually started at least one module/session
+        active_student_ids = db.query(func.distinct(StudentModuleStatus.student_id)).union(
+            db.query(func.distinct(StudentSessionStatus.student_id))
+        ).count()
+        
+        active_enrollments = active_student_ids
+        
+        # Count "Completed" enrollments based on StudentModuleStatus
+        # A student is considered to have "completed" roughly if they have many completed modules
+        # Or better: total completed modules / (total students * average modules per course)
+        total_completed_modules = db.query(StudentModuleStatus).filter(StudentModuleStatus.status == 'Completed').count()
+        
+        # For simplicity in this view, let's use the average progress from the status tables
+        avg_module_progress = db.query(func.avg(StudentModuleStatus.progress_percentage)).scalar() or 0
+        avg_session_progress = db.query(func.avg(StudentSessionStatus.progress_percentage)).scalar() or 0
+        
+        # Completion rate as the average of overall progress across all active tracks
+        completion_rate = (avg_module_progress + avg_session_progress) / 2 if (avg_module_progress + avg_session_progress) > 0 else 0
+        
+        # If we want a harder "Completed Enrollments" number:
+        completed_enrollments = db.query(func.count(func.distinct(StudentModuleStatus.student_id))).filter(
+            StudentModuleStatus.status == 'Completed'
+        ).scalar() or 0
+        
+        # Enrollment statistics (legacy/placeholder compatible)
         total_enrollments = db.query(Enrollment).count()
-        active_enrollments = db.query(Enrollment).filter(Enrollment.progress > 0).count()
-        completed_enrollments = db.query(Enrollment).filter(Enrollment.progress >= 90).count()
+        if total_enrollments == 0:
+            # Fallback to sum of cohort memberships if Enrollment is empty
+            total_enrollments = db.query(UserCohort).count()
         
         # Engagement statistics
         total_resources = db.query(Resource).count()
@@ -56,10 +85,11 @@ async def get_admin_analytics(
         # Attendance statistics
         total_attendances = db.query(Attendance).count()
         attended_count = db.query(Attendance).filter(Attendance.attended == True).count()
-        attendance_rate = (attended_count / total_attendances * 100) if total_attendances > 0 else 0
-        
-        # Completion rate
-        completion_rate = (completed_enrollments / total_enrollments * 100) if total_enrollments > 0 else 0
+        # Fallback to session progress if attendance records are empty
+        if total_attendances > 0:
+            attendance_rate = (attended_count / total_attendances * 100)
+        else:
+            attendance_rate = avg_session_progress
         
         # Cohort statistics
         total_cohorts = db.query(Cohort).count()
