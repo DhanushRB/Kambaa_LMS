@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 from datetime import timedelta
 from pydantic import BaseModel, Field
 from database import get_db, User, Admin, Presenter, Mentor, Manager
-from auth import verify_password, create_access_token_with_session, ACCESS_TOKEN_EXPIRE_MINUTES
+from jose import jwt, JWTError
+from auth import verify_password, create_access_token_with_session, ACCESS_TOKEN_EXPIRE_MINUTES, SECRET_KEY, ALGORITHM
+from session_manager import SessionManager
 import logging
 
 import logging
@@ -291,24 +293,45 @@ async def student_login(login_data: LoginRequest, request: Request, db: Session 
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # Logout endpoints for each role
+# Helper to handle logout by invalidating session in DB
+async def perform_logout(request: Request, db: Session):
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.split(" ")[1]
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            session_token = payload.get("session_token")
+            if session_token:
+                SessionManager.invalidate_session(db, session_token)
+                logger.info(f"Session {session_token} invalidated on logout")
+        except JWTError:
+            pass
+        except Exception as e:
+            logger.error(f"Logout session invalidation error: {str(e)}")
+
 @router.post("/admin/logout")
-async def admin_logout():
+async def admin_logout(request: Request, db: Session = Depends(get_db)):
+    await perform_logout(request, db)
     return {"message": "Admin logged out successfully", "redirect_url": "/auth/admin-login"}
 
 @router.post("/manager/logout")
-async def manager_logout():
+async def manager_logout(request: Request, db: Session = Depends(get_db)):
+    await perform_logout(request, db)
     return {"message": "Manager logged out successfully", "redirect_url": "/auth/manager-login"}
 
 @router.post("/presenter/logout")
-async def presenter_logout():
+async def presenter_logout(request: Request, db: Session = Depends(get_db)):
+    await perform_logout(request, db)
     return {"message": "Presenter logged out successfully", "redirect_url": "/auth/presenter-login"}
 
 @router.post("/mentor/logout")
-async def mentor_logout():
+async def mentor_logout(request: Request, db: Session = Depends(get_db)):
+    await perform_logout(request, db)
     return {"message": "Mentor logged out successfully", "redirect_url": "/auth/mentor-login"}
 
 @router.post("/student/logout")
-async def student_logout():
+async def student_logout(request: Request, db: Session = Depends(get_db)):
+    await perform_logout(request, db)
     return {"message": "Logged out successfully", "redirect_url": "/auth/student-login"}
 
 # Dashboard endpoints for each role

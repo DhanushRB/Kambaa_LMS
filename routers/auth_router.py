@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from database import get_db, User, Admin, Presenter, Manager
-from auth import verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from auth import verify_password, create_access_token_with_session, ACCESS_TOKEN_EXPIRE_MINUTES
 from schemas import AdminLogin
 from pydantic import BaseModel, Field
 import logging
@@ -49,8 +49,10 @@ async def login(user_data: UserLogin, request: Request, db: Session = Depends(ge
             raise HTTPException(status_code=401, detail="Invalid credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
+        access_token = create_access_token_with_session(
             data={"sub": user.username, "role": user.role, "user_id": user.id}, 
+            db=db,
+            request=request,
             expires_delta=access_token_expires
         )
         
@@ -101,8 +103,10 @@ async def admin_login(admin_data: AdminLogin, request: Request, db: Session = De
             raise HTTPException(status_code=401, detail="Invalid admin credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
+        access_token = create_access_token_with_session(
             data={"sub": admin.username, "role": "Admin", "user_id": admin.id}, 
+            db=db,
+            request=request,
             expires_delta=access_token_expires
         )
         
@@ -151,8 +155,10 @@ async def presenter_login(presenter_data: AdminLogin, request: Request, db: Sess
             raise HTTPException(status_code=401, detail="Invalid presenter credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
+        access_token = create_access_token_with_session(
             data={"sub": presenter.username, "role": "Presenter", "user_id": presenter.id}, 
+            db=db,
+            request=request,
             expires_delta=access_token_expires
         )
         
@@ -201,8 +207,10 @@ async def manager_login(manager_data: AdminLogin, request: Request, db: Session 
             raise HTTPException(status_code=401, detail="Invalid manager credentials")
         
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
+        access_token = create_access_token_with_session(
             data={"sub": manager.username, "role": "Manager", "user_id": manager.id}, 
+            db=db,
+            request=request,
             expires_delta=access_token_expires
         )
         

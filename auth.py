@@ -112,7 +112,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-def get_current_user(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_user(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     username = token_data.get("sub")
     if not username:
         raise HTTPException(status_code=401, detail="Invalid token: no username")
@@ -127,31 +127,31 @@ def get_current_student(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Please update your GitHub link in profile to access this page")
     return current_user
 
-def get_current_admin(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_admin(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.username == token_data.get("sub")).first()
     if admin is None:
         raise HTTPException(status_code=401, detail="Admin not found")
     return admin
 
-def get_current_presenter(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_presenter(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     presenter = db.query(Presenter).filter(Presenter.username == token_data.get("sub")).first()
     if presenter is None:
         raise HTTPException(status_code=401, detail="Presenter not found")
     return presenter
 
-def get_current_mentor(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_mentor(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     mentor = db.query(Mentor).filter(Mentor.username == token_data.get("sub")).first()
     if mentor is None:
         raise HTTPException(status_code=401, detail="Mentor not found")
     return mentor
 
-def get_current_manager(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_manager(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     manager = db.query(Manager).filter(Manager.username == token_data.get("sub")).first()
     if manager is None:
         raise HTTPException(status_code=401, detail="Manager not found")
     return manager
 
-def get_current_user_any_role(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_user_any_role(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     """Get current user of any role (Student, Admin, Presenter, Mentor, Manager)"""
     username = token_data.get("sub")
     role = token_data.get("role")
@@ -184,7 +184,7 @@ def get_current_user_any_role(token_data: dict = Depends(verify_token), db: Sess
     else:
         raise HTTPException(status_code=403, detail="Invalid role")
 
-def get_current_admin_presenter_mentor_or_manager(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_admin_presenter_mentor_or_manager(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     """Get current admin, presenter, mentor, or manager - all have calendar access permissions"""
     username = token_data.get("sub")
     role = token_data.get("role")
@@ -212,7 +212,7 @@ def get_current_admin_presenter_mentor_or_manager(token_data: dict = Depends(ver
     else:
         raise HTTPException(status_code=403, detail="Access denied. Admin, Presenter, Mentor, or Manager role required.")
 
-def get_current_admin_presenter_or_mentor(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_admin_presenter_or_mentor(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     """Get current admin, presenter, or mentor - all have event creation permissions"""
     username = token_data.get("sub")
     role = token_data.get("role")
@@ -235,7 +235,7 @@ def get_current_admin_presenter_or_mentor(token_data: dict = Depends(verify_toke
     else:
         raise HTTPException(status_code=403, detail="Access denied. Admin, Presenter, or Mentor role required.")
 
-def get_current_admin_or_presenter(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_admin_or_presenter(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     """Get current admin, manager, or presenter - all have course management permissions"""
     username = token_data.get("sub")
     role = token_data.get("role")
@@ -298,7 +298,7 @@ def get_current_user_from_token(token: str, db: Session):
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-def get_current_user_info(token_data: dict = Depends(verify_token), db: Session = Depends(get_db)):
+def get_current_user_info(token_data: dict = Depends(verify_token_with_session), db: Session = Depends(get_db)):
     """Get current user info from any user type for chat system"""
     username = token_data.get("sub")
     role = token_data.get("role")

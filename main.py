@@ -53,8 +53,8 @@ app.add_middleware(
 
 # Add single device login enforcement middleware
 from single_device_middleware import SingleDeviceMiddleware
-# Enable for all roles: Student, Admin, Presenter, Mentor, Manager
-app.add_middleware(SingleDeviceMiddleware, enforce_for_roles=["Student", "Admin", "Presenter", "Mentor", "Manager"])
+# Enable for all roles: Student, Faculty, Admin, Presenter, Mentor, Manager
+app.add_middleware(SingleDeviceMiddleware, enforce_for_roles=["Student", "Faculty", "Admin", "Presenter", "Mentor", "Manager"])
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
