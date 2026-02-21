@@ -23,6 +23,7 @@ except ImportError:
     )
 from auth import get_current_admin, get_current_presenter, get_current_mentor, get_current_user, get_current_admin_or_presenter
 from logging_utils import log_student_action
+from email_utils import send_content_added_notification
 
 router = APIRouter(prefix="/assignments-quizzes", tags=["Assignments & Quizzes"])
 
@@ -288,6 +289,20 @@ async def create_assignment(
         db.commit()
         db.refresh(assignment)
 
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=assignment.session_id,
+                content_title=assignment.title,
+                content_type="ASSIGNMENT",
+                session_type=assignment.session_type,
+                description=assignment.description
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to trigger notification: {str(e)}")
+
         return {
             "message": "Assignment created successfully",
             "assignment_id": assignment.id,
@@ -380,6 +395,20 @@ async def create_assignment_with_file(
         db.add(assignment)
         db.commit()
         db.refresh(assignment)
+
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=assignment.session_id,
+                content_title=assignment.title,
+                content_type="ASSIGNMENT",
+                session_type=assignment.session_type,
+                description=assignment.description
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to trigger notification: {str(e)}")
 
         return {
             "message": "Assignment created successfully",
@@ -802,6 +831,20 @@ async def create_quiz(
         db.add(quiz)
         db.commit()
         db.refresh(quiz)
+
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=quiz.session_id,
+                content_title=quiz.title,
+                content_type="QUIZ",
+                session_type=quiz.session_type,
+                description=quiz.description
+            )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to trigger notification: {str(e)}")
 
         return {
             "message": "Quiz created successfully",

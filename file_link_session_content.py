@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Form
 from sqlalchemy.orm import Session
 from database import get_db, SessionContent, Session as SessionModel
 from auth import get_current_admin_or_presenter
+from email_utils import send_content_added_notification
 from typing import Optional
 import logging
 
@@ -41,6 +42,21 @@ async def add_file_link(
         db.add(content)
         db.commit()
         db.refresh(content)
+        
+        # Send notification
+        try:
+            # Determine session type (assume global for this router, or check type)
+            # This router seems to handle regular Session model
+            await send_content_added_notification(
+                db=db,
+                session_id=session_id,
+                content_title=title,
+                content_type="EXTERNAL_LINK",
+                session_type="global",
+                description=description
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger notification: {str(e)}")
         
         return {
             "message": "External link added successfully",

@@ -20,7 +20,8 @@ router = APIRouter(prefix="/cohorts", tags=["Cohort Courses"])
 class CohortCourseCreate(BaseModel):
     title: str
     description: Optional[str] = None
-    sessions_per_week: int = 2
+    num_modules: int = 12
+    sessions_per_module: int = 2
     is_active: bool = True
     banner_image: Optional[str] = None
 
@@ -52,13 +53,14 @@ async def create_cohort_course(
         if not cohort:
             raise HTTPException(status_code=404, detail="Cohort not found")
         
-        # Create cohort-specific course (set created_by to None to avoid foreign key constraint)
+        # Create cohort-specific course
+        # Map frontend names (num_modules, sessions_per_module) to DB names (duration_weeks, sessions_per_week)
         course = CohortSpecificCourse(
             cohort_id=cohort_id,
             title=course_data.title,
             description=course_data.description,
-            duration_weeks=course_data.duration_weeks,
-            sessions_per_week=course_data.sessions_per_week,
+            duration_weeks=course_data.num_modules,
+            sessions_per_week=course_data.sessions_per_module,
             is_active=course_data.is_active,
             banner_image=course_data.banner_image,
             created_by=None  # Set to None to avoid foreign key constraint with presenters
@@ -69,8 +71,8 @@ async def create_cohort_course(
         # Auto-setup course structure
         await auto_setup_cohort_course_structure(
             course.id, 
-            course_data.duration_weeks, 
-            course_data.sessions_per_week, 
+            course_data.num_modules, 
+            course_data.sessions_per_module, 
             db
         )
         
@@ -342,8 +344,16 @@ async def update_cohort_course(
             raise HTTPException(status_code=404, detail="Course not found in this cohort")
         
         update_data = course_data.dict(exclude_unset=True)
+        
+        # Map frontend field names to database field names
+        if 'num_modules' in update_data:
+            update_data['duration_weeks'] = update_data.pop('num_modules')
+        if 'sessions_per_module' in update_data:
+            update_data['sessions_per_week'] = update_data.pop('sessions_per_module')
+            
         for field, value in update_data.items():
-            setattr(course, field, value)
+            if hasattr(course, field):
+                setattr(course, field, value)
         
         db.commit()
         

@@ -15,6 +15,7 @@ from jinja2 import Template
 
 from database import SessionLocal
 from smtp_models import SMTPConfig
+from smtp_connection import get_smtp_connection
 
 logger = logging.getLogger(__name__)
 
@@ -126,25 +127,28 @@ class EmailService:
             if bcc_emails:
                 all_recipients.extend(bcc_emails)
             
-            # Send email with proper connection handling
-            server = None
+            # Use robust connection utility
+            server, error = get_smtp_connection(
+                host=self.smtp_config.smtp_host,
+                port=self.smtp_config.smtp_port,
+                username=self.smtp_config.smtp_username,
+                password=password,
+                use_tls=self.smtp_config.use_tls,
+                use_ssl=self.smtp_config.use_ssl,
+                timeout=30
+            )
+            
+            if error:
+                logger.error(f"SMTP connection error: {error}")
+                return False
+                
             try:
-                if self.smtp_config.use_ssl or self.smtp_config.smtp_port == 465:
-                    server = smtplib.SMTP_SSL(self.smtp_config.smtp_host, self.smtp_config.smtp_port, timeout=30)
-                else:
-                    server = smtplib.SMTP(self.smtp_config.smtp_host, self.smtp_config.smtp_port, timeout=30)
-                    if self.smtp_config.use_tls:
-                        server.starttls()
-                
-                server.login(self.smtp_config.smtp_username, password)
                 server.send_message(msg, to_addrs=all_recipients)
-                
                 logger.info(f"Email sent successfully to {len(all_recipients)} recipients using SMTP: {self.smtp_config.smtp_host}:{self.smtp_config.smtp_port}")
                 return True
-                
             except Exception as smtp_error:
-                logger.error(f"SMTP connection/send error: {str(smtp_error)}")
-                raise smtp_error
+                logger.error(f"SMTP send error: {str(smtp_error)}")
+                return False
             finally:
                 if server:
                     try:

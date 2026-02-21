@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from database import get_db, Resource, Session as SessionModel
 from auth import get_current_admin_or_presenter
+from email_utils import send_content_added_notification
 import requests
 import aiohttp
 import aiofiles
@@ -178,6 +179,19 @@ async def create_file_link_resource(
             db.commit()
             db.refresh(content)
             resource_id = content.id
+            
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=title.strip(),
+                    content_type="RESOURCE",
+                    session_type="cohort",
+                    description=description.strip() if description else None
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
         else:
             # Create regular resource
             resource = Resource(
@@ -193,6 +207,19 @@ async def create_file_link_resource(
             db.commit()
             db.refresh(resource)
             resource_id = resource.id
+            
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=title.strip(),
+                    content_type="RESOURCE",
+                    session_type="global",
+                    description=description.strip() if description else None
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
         
         # Schedule background download
         from routers.resource_router import process_file_download_background

@@ -9,6 +9,7 @@ from database import Notification, EmailLog, NotificationPreference
 from smtp_models import SMTPConfig
 from smtp_endpoints import decrypt_password
 from smtp_cache import smtp_cache
+from smtp_connection import get_smtp_connection
 
 logger = logging.getLogger(__name__)
 
@@ -146,17 +147,32 @@ class NotificationService:
                 message[key] = value
             message.set_content(body, subtype="html")
 
-            # Use proper connection based on port and SSL/TLS settings
-            if smtp_config['smtp_port'] == 465 or smtp_config['use_ssl']:
-                with smtplib.SMTP_SSL(smtp_config['smtp_host'], smtp_config['smtp_port'], timeout=30) as smtp:
-                    smtp.login(smtp_config['smtp_username'], smtp_config['smtp_password'])
-                    smtp.send_message(message)
-            else:
-                with smtplib.SMTP(smtp_config['smtp_host'], smtp_config['smtp_port'], timeout=30) as smtp:
-                    if smtp_config['use_tls']:
-                        smtp.starttls()
-                    smtp.login(smtp_config['smtp_username'], smtp_config['smtp_password'])
-                    smtp.send_message(message)
+            # Use robust connection utility
+            server, error = get_smtp_connection(
+                host=smtp_config['smtp_host'],
+                port=smtp_config['smtp_port'],
+                username=smtp_config['smtp_username'],
+                password=smtp_config['smtp_password'],
+                use_tls=smtp_config['use_tls'],
+                use_ssl=smtp_config['use_ssl'],
+                timeout=30
+            )
+            
+            if error:
+                logger.error(f"SMTP connection error for {to_email}: {error}")
+                return "failed", error
+                
+            try:
+                server.send_message(message)
+            except Exception as e:
+                logger.error(f"SMTP send error for {to_email}: {str(e)}")
+                return "failed", str(e)
+            finally:
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
                     
             logger.info("Email sent to %s (user_id=%s)", to_email, user_id)
             return "sent", None

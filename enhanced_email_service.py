@@ -4,6 +4,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, Dict, List
+from smtp_connection import get_smtp_connection
 from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 from database import Notification, EmailLog, NotificationPreference, User
@@ -229,11 +230,32 @@ class EmailService:
             html_part = MIMEText(html_content, 'html')
             msg.attach(html_part)
             
-            # Send email
-            with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-                server.starttls()
-                server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+            # Use robust connection utility
+            server, error = get_smtp_connection(
+                host=EMAIL_HOST,
+                port=EMAIL_PORT,
+                username=EMAIL_USERNAME,
+                password=EMAIL_PASSWORD,
+                use_tls=True, # Default to True for port 587
+                use_ssl=False,
+                timeout=30
+            )
+            
+            if error:
+                logger.error(f"Email dispatch error for {to_email}: {error}")
+                return "failed", error
+                
+            try:
                 server.send_message(msg)
+            except Exception as e:
+                logger.error(f"Email dispatch error for {to_email}: {str(e)}")
+                return "failed", str(e)
+            finally:
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
             
             logger.info(f"Email sent successfully to {to_email}")
             return "sent", None
@@ -263,38 +285,20 @@ class EmailService:
     def test_smtp_connection(self):
         """Test SMTP connection"""
         try:
-            with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-                server.starttls()
-                server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
-            return True, "SMTP connection successful"
-        except Exception as e:
-            return False, f"SMTP connection failed: {str(e)}"ger.error(f"Failed to send email to {to_email}: {str(e)}")
-            return "failed", str(e)
-    
-    def _log_email(self, user_id: int, email: str, subject: str, status: str, error_message: Optional[str]):
-        """Log email attempt to database"""
-        try:
-            email_log = EmailLog(
-                user_id=user_id,
-                email=email,
-                subject=subject,
-                status=status,
-                error_message=error_message
+            server, error = get_smtp_connection(
+                host=EMAIL_HOST,
+                port=EMAIL_PORT,
+                username=EMAIL_USERNAME,
+                password=EMAIL_PASSWORD,
+                use_tls=True,
+                use_ssl=False,
+                timeout=30
             )
-            self.db.add(email_log)
-            self.db.commit()
-            self.db.refresh(email_log)
-            return email_log
-        except Exception as e:
-            logger.error(f"Failed to log email: {str(e)}")
-            return None
-    
-    def test_smtp_connection(self):
-        """Test SMTP connection"""
-        try:
-            with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-                server.starttls()
-                server.login(EMAIL_USERNAME, EMAIL_PASSWORD)
+            if error:
+                return False, f"SMTP connection failed: {error}"
+            
+            if server:
+                server.quit()
             return True, "SMTP connection successful"
         except Exception as e:
             return False, f"SMTP connection failed: {str(e)}"

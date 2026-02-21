@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from smtp_models import SMTPConfig
 from cryptography.fernet import Fernet
+from smtp_connection import get_smtp_connection
 
 class EmailService:
     def __init__(self):
@@ -44,20 +45,32 @@ class EmailService:
             message["Subject"] = subject
             message.set_content(body, subtype="html" if is_html else "plain")
             
-            # Use the same connection logic as campaigns
-            if smtp_config['smtp_port'] == 465 or smtp_config['use_ssl']:
-                print(f"Using SSL connection on port {smtp_config['smtp_port']}")
-                with smtplib.SMTP_SSL(smtp_config['smtp_host'], smtp_config['smtp_port'], timeout=30) as smtp:
-                    smtp.login(smtp_config['smtp_username'], smtp_config['smtp_password'])
-                    smtp.send_message(message)
-            else:
-                print(f"Using SMTP connection on port {smtp_config['smtp_port']}")
-                with smtplib.SMTP(smtp_config['smtp_host'], smtp_config['smtp_port'], timeout=30) as smtp:
-                    if smtp_config['use_tls']:
-                        print("Starting TLS...")
-                        smtp.starttls()
-                    smtp.login(smtp_config['smtp_username'], smtp_config['smtp_password'])
-                    smtp.send_message(message)
+            # Use robust connection utility
+            server, error = get_smtp_connection(
+                host=smtp_config['smtp_host'],
+                port=smtp_config['smtp_port'],
+                username=smtp_config['smtp_username'],
+                password=smtp_config['smtp_password'],
+                use_tls=smtp_config['use_tls'],
+                use_ssl=smtp_config['use_ssl'],
+                timeout=30
+            )
+            
+            if error:
+                print(f"Email send failed for {to_email}: {error}")
+                return False
+                
+            try:
+                server.send_message(message)
+            except Exception as e:
+                print(f"Email send failed for {to_email}: {str(e)}")
+                return False
+            finally:
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
             
             print(f"Email sent successfully to {to_email}")
             return True

@@ -142,6 +142,8 @@ async def get_smtp_config(
         logger.error(f"Get SMTP config error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch SMTP configuration")
 
+from smtp_connection import get_smtp_connection
+
 @router.post("/smtp/debug")
 async def debug_smtp_data(
     request_data: dict,
@@ -311,24 +313,25 @@ Test performed by: {current_admin.username} ({current_admin.email})
         msg.attach(MIMEText(body, 'plain'))
         
         # Send email with timeout and proper connection management
-        server = None
+        server, error = get_smtp_connection(
+            host=smtp_host,
+            port=config.smtp_port,
+            username=config.smtp_username,
+            password=password,
+            use_tls=config.use_tls,
+            use_ssl=config.use_ssl,
+            timeout=30
+        )
+        
+        if error:
+            logger.error(f"SMTP connection error: {error}")
+            raise HTTPException(status_code=400, detail=f"SMTP connection failed: {error}")
+            
         try:
-            # Port 465 requires SSL, other ports typically use TLS
-            if config.smtp_port == 465 or config.use_ssl:
-                server = smtplib.SMTP_SSL(smtp_host, config.smtp_port, timeout=30)
-            else:
-                server = smtplib.SMTP(smtp_host, config.smtp_port, timeout=30)
-                if config.use_tls:
-                    server.starttls()
-            
-            # Set command timeout
-            server.sock.settimeout(30)
-            server.login(config.smtp_username, password)
             server.send_message(msg)
-            
         except Exception as smtp_error:
-            logger.error(f"SMTP connection error: {str(smtp_error)}")
-            raise smtp_error
+            logger.error(f"SMTP send error: {str(smtp_error)}")
+            raise HTTPException(status_code=400, detail=f"Failed to send email: {str(smtp_error)}")
         finally:
             if server:
                 try:

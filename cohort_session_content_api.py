@@ -14,6 +14,7 @@ import uuid
 from jose import jwt
 from pathlib import Path
 from auth import SECRET_KEY, ALGORITHM, get_current_user_info
+from email_utils import send_content_added_notification
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Cohort Session Content"])
@@ -44,8 +45,9 @@ async def upload_cohort_resource(
     current_user = Depends(get_current_admin_or_presenter),
     db: Session = Depends(get_db)
 ):
-    """Upload resource for cohort course session"""
+    """Upload resource for cohort course session slice"""
     try:
+        logger.info(f"Received upload request for session_id: {session_id}, title: {title}")
         # Check if it's a cohort session
         cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
         
@@ -74,6 +76,19 @@ async def upload_cohort_resource(
             db.add(session_content)
             db.commit()
             db.refresh(session_content)
+            
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=title,
+                    content_type="RESOURCE",
+                    session_type="cohort",
+                    description=description
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
             
             return {
                 "message": "Resource uploaded successfully",
@@ -255,6 +270,19 @@ async def create_cohort_session_content(
             db.commit()
             db.refresh(session_content)
             
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=content_data.session_id,
+                    content_title=content_data.title,
+                    content_type=content_data.content_type,
+                    session_type="cohort",
+                    description=content_data.description
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
+            
             return {
                 "message": "Content created successfully",
                 "content_id": session_content.id
@@ -278,6 +306,19 @@ async def create_cohort_session_content(
                 db.add(session_content)
                 db.commit()
                 db.refresh(session_content)
+                
+                # Send notification for regular session
+                try:
+                    await send_content_added_notification(
+                        db=db,
+                        session_id=content_data.session_id,
+                        content_title=content_data.title,
+                        content_type=content_data.content_type,
+                        session_type="global",
+                        description=content_data.description
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to trigger notification: {str(e)}")
                 
                 return {
                     "message": "Content created successfully",

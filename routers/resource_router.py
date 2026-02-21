@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db, Session as SessionModel, Resource, Module, Course
 from auth import get_current_admin_or_presenter, get_current_presenter
 from typing import Optional, Any
+from email_utils import send_content_added_notification
 import logging
 import os
 from pathlib import Path
@@ -60,6 +61,19 @@ async def upload_resource_simple(
             db.commit()
             db.refresh(session_content)
             
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=title,
+                    content_type="RESOURCE",
+                    session_type="cohort",
+                    description=description
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
+            
             return {
                 "message": "Resource uploaded successfully",
                 "resource_id": session_content.id,
@@ -94,6 +108,19 @@ async def upload_resource_simple(
         db.add(resource)
         db.commit()
         db.refresh(resource)
+        
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=session_id,
+                content_title=title,
+                content_type="RESOURCE",
+                session_type="global",
+                description=description
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger notification: {str(e)}")
         
         return {
             "message": "Resource uploaded successfully",
@@ -144,6 +171,19 @@ async def upload_resource(
         db.add(resource)
         db.commit()
         db.refresh(resource)
+        
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=session_id,
+                content_title=title,
+                content_type=resource_type,
+                session_type="global",
+                description=description
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger notification: {str(e)}")
         
         return {
             "message": "Resource uploaded successfully",
@@ -609,6 +649,19 @@ async def create_file_link(
             db.add(resource)
             db.commit()
             db.refresh(resource)
+            
+            # Send notification
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=title,
+                    content_type="RESOURCE",
+                    session_type="cohort",
+                    description=description
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification: {str(e)}")
              
             # Schedule background download
             background_tasks.add_task(process_file_download_background, session_id, resource.id, file_url, is_cohort=True)
@@ -638,6 +691,19 @@ async def create_file_link(
         db.add(resource)
         db.commit()
         db.refresh(resource)
+        
+        # Send notification
+        try:
+            await send_content_added_notification(
+                db=db,
+                session_id=session_id,
+                content_title=title,
+                content_type="RESOURCE",
+                session_type="global",
+                description=description
+            )
+        except Exception as e:
+            logger.error(f"Failed to trigger notification: {str(e)}")
         
         # Schedule background download
         background_tasks.add_task(process_file_download_background, session_id, resource.id, file_url, is_cohort=False)
@@ -781,6 +847,20 @@ async def bulk_upload_resources(
                 continue
         
         db.commit()
+        
+        # Send notifications for all uploaded files
+        for res_info in uploaded_resources:
+            try:
+                await send_content_added_notification(
+                    db=db,
+                    session_id=session_id,
+                    content_title=res_info["filename"],
+                    content_type=resource_type,
+                    session_type="global",
+                    description=f"Bulk uploaded file: {res_info['filename']}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to trigger notification for {res_info['filename']}: {str(e)}")
         
         return {
             "message": f"Successfully uploaded {len(uploaded_resources)} resources",
