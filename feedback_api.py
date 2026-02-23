@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
@@ -13,6 +13,7 @@ from feedback_models import (
     FeedbackForm, FeedbackQuestion, FeedbackSubmission, FeedbackAnswer,
     QuestionType
 )
+from email_utils import send_feedback_submission_confirmation, send_feedback_request_to_students
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ def is_staff(user_info) -> bool:
 @router.post("/forms", status_code=status.HTTP_201_CREATED)
 async def create_feedback_form(
     form_data: FeedbackFormCreate,
+    background_tasks: BackgroundTasks,
     current_user = Depends(get_current_user_any_role),
     db: Session = Depends(get_db)
 ):
@@ -100,6 +102,16 @@ async def create_feedback_form(
         db.refresh(new_form)
         
         logger.info(f"Feedback form created: {new_form.id} by user {user_id}")
+        
+        # Trigger feedback request notification to all eligible students
+        background_tasks.add_task(
+            send_feedback_request_to_students,
+            db=db,
+            feedback_title=new_form.title,
+            session_id=new_form.session_id,
+            session_type=new_form.session_type
+        )
+        
         return {"message": "Feedback form created successfully", "form_id": new_form.id}
         
     except HTTPException:
@@ -157,6 +169,7 @@ async def get_feedback_form(
 async def update_feedback_form(
     form_id: int,
     form_data: FeedbackFormUpdate,
+    background_tasks: BackgroundTasks,
     current_user = Depends(get_current_user_any_role),
     db: Session = Depends(get_db)
 ):
@@ -202,6 +215,16 @@ async def update_feedback_form(
         db.commit()
         
         logger.info(f"Feedback form {form_id} updated by user {current_user.get('id') if isinstance(current_user, dict) else current_user.id}")
+        
+        # Trigger feedback request notification to all eligible students
+        background_tasks.add_task(
+            send_feedback_request_to_students,
+            db=db,
+            feedback_title=form.title,
+            session_id=form.session_id,
+            session_type=form.session_type
+        )
+        
         return {"message": "Feedback form updated successfully"}
         
     except HTTPException:
@@ -623,6 +646,7 @@ async def get_student_feedback_form(
 async def submit_feedback(
     form_id: int,
     submission_data: FeedbackSubmit,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -670,6 +694,18 @@ async def submit_feedback(
         db.commit()
         
         logger.info(f"Feedback submitted: form={form_id}, user={current_user.id}")
+        
+        # Trigger email notification as a background task if not anonymous
+        if not form.is_anonymous:
+            background_tasks.add_task(
+                send_feedback_submission_confirmation,
+                db=db,
+                student_id=current_user.id,
+                feedback_title=form.title,
+                session_id=form.session_id,
+                session_type=form.session_type
+            )
+            
         return {"message": "Feedback submitted successfully", "submission_id": submission.id}
         
     except HTTPException:

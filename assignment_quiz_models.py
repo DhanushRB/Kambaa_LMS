@@ -51,6 +51,7 @@ class Assignment(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    due_reminder_sent = Column(Boolean, default=False)
     
     # Relationships - Note: session relationship is conditional based on session_type
     # session = relationship("Session")  # Commented out due to dual session type support

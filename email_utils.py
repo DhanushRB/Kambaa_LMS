@@ -276,3 +276,188 @@ async def send_content_added_notification(
         
     except Exception as e:
         logger.error(f"Failed to send content added notifications: {str(e)}")
+
+async def send_feedback_submission_confirmation(
+    db: Session,
+    student_id: int,
+    feedback_title: str,
+    session_id: int,
+    session_type: str = "global"
+):
+    """
+    Send email confirmation to a student when they submit feedback.
+    
+    Args:
+        db: Database session
+        student_id: ID of the student who submitted feedback
+        feedback_title: Title of the feedback form
+        session_id: ID of the session the feedback belongs to
+        session_type: "global" or "cohort"
+    """
+    try:
+        # 1. Get the template
+        template = db.query(EmailTemplate).filter(
+            EmailTemplate.name == "Feedback Submission Confirmation",
+            EmailTemplate.is_active == True
+        ).first()
+        
+        if not template:
+            logger.warning("Feedback submission confirmation template not found or disabled")
+            return
+
+        # 2. Get student details
+        student = db.query(User).filter(User.id == student_id).first()
+        if not student:
+            logger.error(f"Student {student_id} not found")
+            return
+
+        # 3. Get session details
+        session_title = "Unknown Session"
+        if session_type == "cohort":
+            from cohort_specific_models import CohortCourseSession
+            cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+            if cohort_session:
+                session_title = cohort_session.title
+        else:
+            # Session is already imported from database at the top of email_utils.py
+            regular_session = db.query(Session).filter(Session.id == session_id).first()
+            if regular_session:
+                session_title = regular_session.title
+
+        # 4. Initialize notification service
+        notification_service = NotificationService(db)
+        
+        # 5. Format and send email
+        submitted_at = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+        try:
+            context = {
+                "username": student.username,
+                "feedback_title": feedback_title,
+                "session_title": session_title,
+                "submitted_at": submitted_at
+            }
+            
+            subject = template.subject.format(**context)
+            body_text = template.body.format(**context)
+            
+            # Convert plain text to HTML format if not already HTML
+            if body_text.strip().startswith('<!DOCTYPE html>') or body_text.strip().startswith('<html>'):
+                body_html = body_text
+            else:
+                body_html = body_text.replace('\n', '<br>').replace('\n\n', '<br><br>')
+            
+            # Send email
+            notification_service.send_email_notification(
+                user_id=student.id,
+                email=student.email,
+                subject=subject,
+                body=body_html
+            )
+            logger.info(f"Successfully sent feedback confirmation to {student.email}")
+            
+        except Exception as e:
+            logger.error(f"Failed to format or send feedback confirmation to {student.email}: {str(e)}")
+            
+    except Exception as e:
+        logger.error(f"Failed to send feedback submission confirmation: {str(e)}")
+
+async def send_feedback_request_to_students(
+    db: Session,
+    feedback_title: str,
+    session_id: int,
+    session_type: str = "global"
+):
+    """
+    Send email notification to all students when a new feedback form is created.
+    
+    Args:
+        db: Database session
+        feedback_title: Title of the feedback form
+        session_id: ID of the session the feedback belongs to
+        session_type: "global" or "cohort"
+    """
+    try:
+        # 1. Get the template
+        template = db.query(EmailTemplate).filter(
+            EmailTemplate.name == "Feedback Request Notification",
+            EmailTemplate.is_active == True
+        ).first()
+        
+        if not template:
+            logger.warning("Feedback request template not found or disabled")
+            return
+
+        # 2. Get session and target students
+        session_title = "Unknown Session"
+        target_students = []
+
+        if session_type == "cohort":
+            cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+            if cohort_session:
+                session_title = cohort_session.title
+                cohort_module = db.query(CohortCourseModule).filter(CohortCourseModule.id == cohort_session.module_id).first()
+                if cohort_module:
+                    cohort_course = db.query(CohortSpecificCourse).filter(CohortSpecificCourse.id == cohort_module.course_id).first()
+                    if cohort_course:
+                        # For cohort courses, notify all students in the cohort
+                        target_students = db.query(User).join(UserCohort).filter(
+                            UserCohort.cohort_id == cohort_course.cohort_id,
+                            User.user_type == "Student",
+                            User.role == "Student"
+                        ).all()
+        else:
+            regular_session = db.query(Session).filter(Session.id == session_id).first()
+            if regular_session:
+                session_title = regular_session.title
+                regular_module = db.query(Module).filter(Module.id == regular_session.module_id).first()
+                if regular_module:
+                    # For global courses, notify enrolled students
+                    target_students = db.query(User).join(Enrollment).filter(
+                        Enrollment.course_id == regular_module.course_id,
+                        User.user_type == "Student",
+                        User.role == "Student"
+                    ).all()
+
+        if not target_students:
+            logger.info(f"No students found to notify for feedback on session {session_id}")
+            return
+
+        # 3. Initialize notification service
+        notification_service = NotificationService(db)
+        
+        # 4. Send emails
+        success_count = 0
+        for student in target_students:
+            try:
+                context = {
+                    "username": student.username,
+                    "feedback_title": feedback_title,
+                    "session_title": session_title
+                }
+                
+                subject = template.subject.format(**context)
+                body_text = template.body.format(**context)
+                
+                # Convert plain text to HTML format if not already HTML
+                if body_text.strip().startswith('<!DOCTYPE html>') or body_text.strip().startswith('<html>'):
+                    body_html = body_text
+                else:
+                    body_html = body_text.replace('\n', '<br>').replace('\n\n', '<br><br>')
+                
+                # Send email
+                notification_service.send_email_notification(
+                    user_id=student.id,
+                    email=student.email,
+                    subject=subject,
+                    body=body_html
+                )
+                success_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to send feedback request to {student.email}: {str(e)}")
+                continue
+                
+        logger.info(f"Feedback request notification sent to {success_count}/{len(target_students)} students")
+        
+    except Exception as e:
+        logger.error(f"Failed to send feedback request notifications: {str(e)}")

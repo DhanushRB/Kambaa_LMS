@@ -10,35 +10,75 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/default-templates", tags=["default-templates"])
 
+# HTML Base Layout for Professional Emails
+BASE_HTML_LAYOUT = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{subject}}</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f7f9; }
+        .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header { background-color: #f59e0b; padding: 30px; text-align: center; color: white; }
+        .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
+        .content { padding: 30px; }
+        .content p { margin-bottom: 20px; font-size: 16px; }
+        .details-box { background-color: #f8fafc; border-left: 4px solid #f59e0b; padding: 20px; margin: 20px 0; border-radius: 4px; }
+        .details-box strong { color: #1e293b; }
+        .footer { background-color: #f1f5f9; padding: 20px; text-align: center; color: #64748b; font-size: 13px; border-top: 1px solid #e2e8f0; }
+        .button { display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 10px; }
+        .divider { height: 1px; background-color: #e2e8f0; margin: 25px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Kamba LMS</h1>
+        </div>
+        <div class="content">
+            {{body_content}}
+        </div>
+        <div class="footer">
+            <p>&copy; 2026 Kamba AI LMS. All rights reserved.</p>
+            <p>This is an automated message. Please do not reply to this email.</p>
+        </div>
+    </div>
+</body>
+</html>
+""".strip()
+
+def format_html_template(body_content: str):
+    return BASE_HTML_LAYOUT.replace("{{body_content}}", body_content)
+
 # Default template configurations
 DEFAULT_TEMPLATES = {
     "cohort_welcome": {
         "name": "Cohort Welcome Email",
         "subject": "Welcome to Kamba LMS - Your Learning Journey Begins!",
-        "body": """
-Dear {username},
-
-Welcome to Kamba LMS! We're excited to have you join our learning community.
-
-Your cohort details:
-- Cohort Name: {cohort_name}
-- Start Date: {start_date}
-- Instructor: {instructor_name}
-
-What's next:
-1. Complete your profile setup
-2. Explore your course materials
-3. Join your first session
-4. Connect with your peers
-
-If you have any questions, don't hesitate to reach out to our support team.
-
-Best regards,
-The Kamba LMS Team
-
----
-This is an automated message. Please do not reply to this email.
-        """.strip(),
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Welcome to <strong>Kamba LMS</strong>! We're excited to have you join our learning community. Your cohort details are finalized and ready.</p>
+            
+            <div class="details-box">
+                <p><strong>Cohort Details:</strong></p>
+                <p>&bull; <strong>Cohort Name:</strong> {cohort_name}</p>
+                <p>&bull; <strong>Start Date:</strong> {start_date}</p>
+                <p>&bull; <strong>Instructor:</strong> {instructor_name}</p>
+            </div>
+            
+            <p><strong>What's next:</strong></p>
+            <ol>
+                <li>Complete your profile setup</li>
+                <li>Explore your course materials</li>
+                <li>Join your first session</li>
+                <li>Connect with your peers</li>
+            </ol>
+            
+            <p>If you have any questions, don't hesitate to reach out to our support team.</p>
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
         "target_role": "Student",
         "category": "welcome",
         "is_default": True,
@@ -47,35 +87,36 @@ This is an automated message. Please do not reply to this email.
     "user_registration": {
         "name": "User Registration Welcome Email",
         "subject": "Welcome to Kamba LMS - Your Account Has Been Created!",
-        "body": """
-Dear {username},
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Welcome to <strong>Kamba LMS</strong>! Your account has been successfully created. You can now access our comprehensive learning platform.</p>
+            
+            <div class="details-box">
+                <p><strong>Login Details:</strong></p>
+                <p>&bull; <strong>Username:</strong> {username}</p>
+                <p>&bull; <strong>Email:</strong> {email}</p>
+                <p>&bull; <strong>Password:</strong> {password}</p>
+            </div>
 
-Welcome to Kamba LMS! Your account has been successfully created.
-
-Your login details:
-- Username: {username}
-- Email: {email}
-- Password: {password}
-- College: {college}
-- Department: {department}
-- Year: {year}
-
-Please keep these credentials safe and change your password after your first login.
-
-To get started:
-1. Log in to the LMS portal
-2. Complete your profile
-3. Explore available courses
-4. Join your assigned cohort (if applicable)
-
-If you have any questions or need assistance, please contact our support team.
-
-Best regards,
-The Kamba LMS Team
-
----
-This is an automated message. Please do not reply to this email.
-        """.strip(),
+            <div class="details-box">
+                <p><strong>Institution Details:</strong></p>
+                <p>&bull; <strong>College:</strong> {college}</p>
+                <p>&bull; <strong>Department:</strong> {department}</p>
+                <p>&bull; <strong>Year:</strong> {year}</p>
+            </div>
+            
+            <p style="color: #64748b; font-style: italic;">Please keep these credentials safe and change your password after your first login.</p>
+            
+            <p><strong>To get started:</strong></p>
+            <ul>
+                <li>Log in to the LMS portal</li>
+                <li>Complete your profile</li>
+                <li>Explore available courses</li>
+                <li>Join your assigned cohort</li>
+            </ul>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
         "target_role": "All",
         "category": "registration",
         "is_default": True,
@@ -84,28 +125,27 @@ This is an automated message. Please do not reply to this email.
     "new_resource_added": {
         "name": "New Resource Added Notification",
         "subject": "New Resource Added: {resource_title}",
-        "body": """
-Dear {username},
-
-A new resource has been added to your course!
-
-Resource Details:
-- Title: {resource_title}
-- Course: {course_title}
-- Module: {module_title}
-- Session: {session_title}
-- Type: {resource_type}
-- Description: {resource_description}
-- Added on: {added_date}
-
-Log in to your LMS account to access this resource and continue your learning journey.
-
-Best regards,
-The Kamba LMS Team
-
----
-This is an automated message. Please do not reply to this email.
-        """.strip(),
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>A new learning resource has been added to your course. Dive in and explore the new content!</p>
+            
+            <div class="details-box">
+                <p><strong>Resource Details:</strong></p>
+                <p>&bull; <strong>Title:</strong> {resource_title}</p>
+                <p>&bull; <strong>Course:</strong> {course_title}</p>
+                <p>&bull; <strong>Module:</strong> {module_title}</p>
+                <p>&bull; <strong>Session:</strong> {session_title}</p>
+                <p>&bull; <strong>Type:</strong> {resource_type}</p>
+                <p>&bull; <strong>Added on:</strong> {added_date}</p>
+            </div>
+            
+            <div class="divider"></div>
+            <p><strong>Description:</strong><br>{resource_description}</p>
+            
+            <p>Log in to your account to access this resource and continue your learning journey.</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
         "target_role": "Student",
         "category": "notification",
         "is_default": True,
@@ -114,33 +154,30 @@ This is an automated message. Please do not reply to this email.
     "course_added_to_cohort": {
         "name": "New Course Added to Cohort",
         "subject": "New Course Available: {course_title}",
-        "body": """
-Dear {username},
-
-Great news! A new course has been added to your cohort and is now available for enrollment.
-
-Course Details:
-- Course Title: {course_title}
-- Description: {course_description}
-- Duration: {duration_weeks} weeks
-- Sessions per Week: {sessions_per_week}
-- Cohort: {cohort_name}
-- Added on: {added_date}
-
-What's next:
-1. Log in to your LMS account
-2. Navigate to your cohort dashboard
-3. Enroll in the new course
-4. Start your learning journey
-
-This course has been specifically assigned to your cohort by your instructor. Don't miss out on this learning opportunity!
-
-Best regards,
-The Kamba LMS Team
-
----
-This is an automated message. Please do not reply to this email.
-        """.strip(),
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Great news! A new course has been added to your cohort and is now available for enrollment.</p>
+            
+            <div class="details-box">
+                <p><strong>Course Details:</strong></p>
+                <p>&bull; <strong>Title:</strong> {course_title}</p>
+                <p>&bull; <strong>Duration:</strong> {duration_weeks} weeks</p>
+                <p>&bull; <strong>Sessions/Week:</strong> {sessions_per_week}</p>
+                <p>&bull; <strong>Cohort:</strong> {cohort_name}</p>
+                <p>&bull; <strong>Added on:</strong> {added_date}</p>
+            </div>
+            
+            <p><strong>What's next:</strong></p>
+            <ol>
+                <li>Log in to your LMS account</li>
+                <li>Navigate to your cohort dashboard</li>
+                <li>Enroll in the new course</li>
+            </ol>
+            
+            <p>This course has been specifically assigned to your cohort by your instructor. Don't miss out!</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
         "target_role": "Student",
         "category": "notification",
         "is_default": True,
@@ -149,33 +186,96 @@ This is an automated message. Please do not reply to this email.
     "course_enrollment_confirmation": {
         "name": "Course Enrollment Confirmation",
         "subject": "Enrollment Confirmed: {course_title}",
-        "body": """
-Dear {username},
-
-Congratulations! You have successfully enrolled in the course.
-
-Enrollment Details:
-- Course Title: {course_title}
-- Description: {course_description}
-- Duration: {duration_weeks} weeks
-- Sessions per Week: {sessions_per_week}
-- Enrollment Date: {enrollment_date}
-- Course Start Date: {course_start_date}
-
-What's next:
-1. Access your course materials in the LMS
-2. Review the course syllabus and schedule
-3. Join your first session when it begins
-4. Connect with your instructor and classmates
-
-We're excited to have you on this learning journey! If you have any questions, please don't hesitate to contact our support team.
-
-Best regards,
-The Kamba LMS Team
-
----
-This is an automated message. Please do not reply to this email.
-        """.strip(),
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Congratulations! You have successfully enrolled in the course. We're excited to have you on this learning journey!</p>
+            
+            <div class="details-box">
+                <p><strong>Enrollment Details:</strong></p>
+                <p>&bull; <strong>Course Title:</strong> {course_title}</p>
+                <p>&bull; <strong>Duration:</strong> {duration_weeks} weeks</p>
+                <p>&bull; <strong>Start Date:</strong> {course_start_date}</p>
+                <p>&bull; <strong>Enrollment Date:</strong> {enrollment_date}</p>
+            </div>
+            
+            <p><strong>Next steps to follow:</strong></p>
+            <ul>
+                <li>Access your course materials in the LMS</li>
+                <li>Review the course syllabus and schedule</li>
+                <li>Join your first session when it begins</li>
+            </ul>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
+        "target_role": "Student",
+        "category": "notification",
+        "is_default": True,
+        "is_enabled": True
+    },
+    "feedback_submission_confirmation": {
+        "name": "Feedback Submission Confirmation",
+        "subject": "Thank You for Your Feedback: {feedback_title}",
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Thank you for providing your feedback on "<strong>{feedback_title}</strong>". Your input is valuable and helps us improve the learning experience.</p>
+            
+            <div class="details-box">
+                <p><strong>Submission Summary:</strong></p>
+                <p>&bull; <strong>Form:</strong> {feedback_title}</p>
+                <p>&bull; <strong>Session:</strong> {session_title}</p>
+                <p>&bull; <strong>Submitted At:</strong> {submitted_at}</p>
+            </div>
+            
+            <p>We appreciate your time and effort in sharing your thoughts with us.</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
+        "target_role": "Student",
+        "category": "notification",
+        "is_default": True,
+        "is_enabled": True
+    },
+    "feedback_request_notification": {
+        "name": "Feedback Request Notification",
+        "subject": "New Feedback Form: {feedback_title}",
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>A new feedback form "<strong>{feedback_title}</strong>" has been created for your session.</p>
+            
+            <div class="details-box">
+                <p><strong>Session:</strong> {session_title}</p>
+            </div>
+            
+            <p>We value your input and would appreciate it if you could take a moment to provide your feedback. Your anonymous responses help us refine our sessions.</p>
+            
+            <p>You can find the feedback form in your course dashboard under the session details.</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
+        "target_role": "Student",
+        "category": "notification",
+        "is_default": True,
+        "is_enabled": True
+    },
+    "assignment_due_reminder": {
+        "name": "Assignment Due Reminder",
+        "subject": "Reminder: Assignment '{assignment_title}' is due tomorrow",
+        "body": format_html_template("""
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>This is a friendly reminder that the assignment "<strong>{assignment_title}</strong>" is due in <strong>24 hours</strong>.</p>
+            
+            <div class="details-box">
+                <p><strong>Assignment Details:</strong></p>
+                <p>&bull; <strong>Title:</strong> {assignment_title}</p>
+                <p>&bull; <strong>Session:</strong> {session_title}</p>
+                <p>&bull; <strong>Due Date:</strong> {due_date}</p>
+            </div>
+            
+            <p style="color: #ef4444; font-weight: bold;">Our records show that you have not yet submitted this assignment.</p>
+            <p>Please ensure you complete and submit it before the deadline to avoid any marks deduction.</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
         "target_role": "Student",
         "category": "notification",
         "is_default": True,
