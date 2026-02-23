@@ -160,7 +160,7 @@ class CampaignScheduler:
         """Check for campaigns that need to be sent"""
         db = SessionLocal()
         try:
-            now = datetime.utcnow()
+            now = datetime.now()
             logger.info(f"[SCHEDULER] Checking scheduled campaigns at {now}")
             
             # Find campaigns scheduled to be sent now or in the past
@@ -258,13 +258,13 @@ class CampaignScheduler:
                 logger.warning(f"No target users found for campaign {campaign_id} with target_role {campaign.target_role}")
                 campaign.status = "completed"
                 campaign.sent_count = 0
-                campaign.completed_at = datetime.utcnow()
+                campaign.completed_at = datetime.now()
                 db.commit()
                 return
             
             # Update campaign status to sending
             campaign.status = "sending"
-            campaign.started_at = datetime.utcnow()
+            campaign.started_at = datetime.now()
             db.commit()
             
             # Create recipients and send emails
@@ -297,7 +297,7 @@ class CampaignScheduler:
                         
                         if email_log.status in ["sent", "queued"]:
                             recipient.status = "sent"
-                            recipient.sent_at = datetime.utcnow()
+                            recipient.sent_at = datetime.now()
                             sent_count += 1
                         else:
                             recipient.status = "failed"
@@ -312,7 +312,7 @@ class CampaignScheduler:
             # Update campaign with final counts and mark as completed
             campaign.sent_count = sent_count
             campaign.status = "completed"
-            campaign.completed_at = datetime.utcnow()
+            campaign.completed_at = datetime.now()
             
             db.commit()
             
