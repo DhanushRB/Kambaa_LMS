@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/video", tags=["Secure Video Streaming"])
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1024 * 1024 
-VIDEO_TOKEN_EXPIRY_SECONDS = 300 
+VIDEO_TOKEN_EXPIRY_SECONDS = 10800 # 3 hours (increased from 300s to allow longer videos)
 VIDEO_TOKEN_SECRET = SECRET_KEY + "_video_secure"
 
 def create_video_token(resource_id: int, user_id: int, role: str, source: str) -> str:
