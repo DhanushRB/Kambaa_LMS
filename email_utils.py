@@ -340,18 +340,12 @@ async def send_feedback_submission_confirmation(
             subject = template.subject.format(**context)
             body_text = template.body.format(**context)
             
-            # Convert plain text to HTML format if not already HTML
-            if body_text.strip().startswith('<!DOCTYPE html>') or body_text.strip().startswith('<html>'):
-                body_html = body_text
-            else:
-                body_html = body_text.replace('\n', '<br>').replace('\n\n', '<br><br>')
-            
             # Send email
             notification_service.send_email_notification(
                 user_id=student.id,
                 email=student.email,
                 subject=subject,
-                body=body_html
+                body=body_text
             )
             logger.info(f"Successfully sent feedback confirmation to {student.email}")
             
@@ -438,18 +432,12 @@ async def send_feedback_request_to_students(
                 subject = template.subject.format(**context)
                 body_text = template.body.format(**context)
                 
-                # Convert plain text to HTML format if not already HTML
-                if body_text.strip().startswith('<!DOCTYPE html>') or body_text.strip().startswith('<html>'):
-                    body_html = body_text
-                else:
-                    body_html = body_text.replace('\n', '<br>').replace('\n\n', '<br><br>')
-                
                 # Send email
                 notification_service.send_email_notification(
                     user_id=student.id,
                     email=student.email,
                     subject=subject,
-                    body=body_html
+                    body=body_text
                 )
                 success_count += 1
                 

@@ -4,53 +4,15 @@ from pydantic import BaseModel
 from typing import List, Optional
 from database import get_db, EmailTemplate
 from auth import get_current_admin_or_presenter
+from email_styling import wrap_in_base_layout
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/default-templates", tags=["default-templates"])
 
-# HTML Base Layout for Professional Emails
-BASE_HTML_LAYOUT = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{subject}}</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f7f9; }
-        .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .header { background-color: #f59e0b; padding: 30px; text-align: center; color: white; }
-        .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-        .content { padding: 30px; }
-        .content p { margin-bottom: 20px; font-size: 16px; }
-        .details-box { background-color: #f8fafc; border-left: 4px solid #f59e0b; padding: 20px; margin: 20px 0; border-radius: 4px; }
-        .details-box strong { color: #1e293b; }
-        .footer { background-color: #f1f5f9; padding: 20px; text-align: center; color: #64748b; font-size: 13px; border-top: 1px solid #e2e8f0; }
-        .button { display: inline-block; padding: 12px 24px; background-color: #f59e0b; color: white; text-decoration: none; border-radius: 5px; font-weight: bold; margin-top: 10px; }
-        .divider { height: 1px; background-color: #e2e8f0; margin: 25px 0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Kamba LMS</h1>
-        </div>
-        <div class="content">
-            {{body_content}}
-        </div>
-        <div class="footer">
-            <p>&copy; 2026 Kamba AI LMS. All rights reserved.</p>
-            <p>This is an automated message. Please do not reply to this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-""".strip()
-
 def format_html_template(body_content: str):
-    return BASE_HTML_LAYOUT.replace("{{body_content}}", body_content)
+    return body_content.strip()
 
 # Default template configurations
 DEFAULT_TEMPLATES = {

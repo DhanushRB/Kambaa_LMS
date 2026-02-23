@@ -10,6 +10,7 @@ from smtp_models import SMTPConfig
 from smtp_endpoints import decrypt_password
 from smtp_cache import smtp_cache
 from smtp_connection import get_smtp_connection
+from email_styling import wrap_in_base_layout
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,10 @@ class NotificationService:
             message["Subject"] = subject
             for key, value in headers.items():
                 message[key] = value
-            message.set_content(body, subtype="html")
+                
+            # Wrap body in professional layout if it's not already HTML
+            styled_body = wrap_in_base_layout(body, subject)
+            message.set_content(styled_body, subtype="html")
 
             # Use robust connection utility
             server, error = get_smtp_connection(

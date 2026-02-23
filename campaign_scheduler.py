@@ -129,17 +129,11 @@ class CampaignScheduler:
                             subject = template.subject.format(**context)
                             body_text = template.body.format(**context)
                             
-                            # Detect if template is already HTML
-                            if body_text.strip().startswith('<!DOCTYPE html>') or body_text.strip().startswith('<html>'):
-                                body_html = body_text
-                            else:
-                                body_html = body_text.replace('\n', '<br>')
-                            
                             notification_service.send_email_notification(
                                 user_id=student.id,
                                 email=student.email,
                                 subject=subject,
-                                body=body_html
+                                body=body_text
                             )
                             sent_count += 1
                         except Exception as e:
@@ -284,15 +278,15 @@ class CampaignScheduler:
                         db.add(recipient)
                         
                         # Send email
-                        email_body = template.body.replace("{username}", getattr(user, 'username', user.email))
-                        email_body = email_body.replace("{email}", user.email)
+                        body_content = template.body.replace("{username}", getattr(user, 'username', user.email))
+                        body_content = body_content.replace("{email}", user.email)
                         
                         # Send email using regular method
                         email_log = service.send_email_notification(
                             user_id=getattr(user, 'id', None),
                             email=user.email,
                             subject=template.subject,
-                            body=email_body
+                            body=body_content
                         )
                         
                         if email_log.status in ["sent", "queued"]:
