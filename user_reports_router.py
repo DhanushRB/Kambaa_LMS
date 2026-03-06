@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import io
 import pandas as pd
-from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course, AdminLog
+from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course, AdminLog, StudentLog, StudentSessionStatus
 from assignment_quiz_models import Assignment, AssignmentSubmission, AssignmentGrade, Quiz, QuizAttempt, QuizResult
 from auth import get_current_user_any_role
 import logging
@@ -94,11 +94,20 @@ async def get_consolidated_stats(
         
         results = []
         for user in users:
-            # Attendance stats
+            # Attendance stats - check both Attendance table and Session Status
             attendance_records = db.query(Attendance).filter(Attendance.student_id == user.id).all()
             total_attendance = len(attendance_records)
             attended_count = sum(1 for a in attendance_records if a.attended)
-            attendance_rate = (attended_count / total_attendance * 100) if total_attendance > 0 else 0
+            
+            # Fallback to StudentSessionStatus if no live attendance records
+            if total_attendance == 0:
+                session_statuses = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == user.id).all()
+                if session_statuses:
+                    attendance_rate = sum(s.progress_percentage for s in session_statuses) / len(session_statuses)
+                else:
+                    attendance_rate = 0
+            else:
+                attendance_rate = (attended_count / total_attendance * 100)
             
             # Assignment stats
             assignment_grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user.id).all()
@@ -108,6 +117,13 @@ async def get_consolidated_stats(
             quiz_results = db.query(QuizResult).filter(QuizResult.student_id == user.id).all()
             avg_quiz = sum(r.percentage for r in quiz_results) / len(quiz_results) if quiz_results else 0
             
+            # Activities Count based on role
+            if user.role in ['Student', 'Faculty']:
+                activities_count = db.query(StudentLog).filter(StudentLog.student_id == user.id).count()
+            else:
+                # For Admins, Presenters, etc. (if they exist in User table or fallback)
+                activities_count = db.query(AdminLog).filter(AdminLog.admin_username == user.username).count()
+            
             cohort_name = db.query(Cohort.name).filter(Cohort.id == user.cohort_id).scalar()
             
             results.append({
@@ -116,7 +132,7 @@ async def get_consolidated_stats(
                 "email": user.email,
                 "role": user.role,
                 "cohort_name": cohort_name,
-                "activities_count": db.query(AdminLog).filter(AdminLog.admin_username == user.username).count(), # Conceptual
+                "activities_count": activities_count,
                 "assignments_submitted": len(assignment_grades),
                 "assignments_avg": round(avg_assignment, 2),
                 "quizzes_attempted": len(quiz_results),
@@ -151,11 +167,25 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
         attendance_records = db.query(Attendance).filter(Attendance.student_id == user_id).all()
         total_attendance = len(attendance_records)
         attended_count = sum(1 for a in attendance_records if a.attended)
-        attendance_rate = (attended_count / total_attendance * 100) if total_attendance > 0 else 0
+        
+        if total_attendance == 0:
+            session_statuses = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == user_id).all()
+            if session_statuses:
+                attendance_rate = sum(s.progress_percentage for s in session_statuses) / len(session_statuses)
+            else:
+                attendance_rate = 0
+        else:
+            attendance_rate = (attended_count / total_attendance * 100)
+            
+        # Activity count
+        if user.role in ['Student', 'Faculty']:
+            activities_count = db.query(StudentLog).filter(StudentLog.student_id == user_id).count()
+        else:
+            activities_count = db.query(AdminLog).filter(AdminLog.admin_username == user.username).count()
         
         return {
             "stats": {
-                "total_activities": 0, # Placeholder or implement via logs
+                "total_activities": activities_count,
                 "enrollments_count": enrollments_count,
                 "assignments": {"average_score": round(avg_assignment, 2)},
                 "attendance": {"attendance_rate": round(attendance_rate, 2)}
@@ -167,8 +197,37 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
 
 @router.get("/{user_id}/activities")
 async def get_user_activities(user_id: int, page: int = 1, limit: int = 50, db: Session = Depends(get_db)):
-    # Placeholder for user activities tracking
-    return {"activities": [], "total": 0}
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user: return {"activities": [], "total": 0}
+        
+        if user.role in ['Student', 'Faculty']:
+            query = db.query(StudentLog).filter(StudentLog.student_id == user_id).order_by(StudentLog.timestamp.desc())
+            total = query.count()
+            logs = query.offset((page - 1) * limit).limit(limit).all()
+            activities = [{
+                "id": log.id,
+                "action": log.action_type,
+                "resource": log.resource_type,
+                "details": log.details,
+                "timestamp": log.timestamp
+            } for log in logs]
+        else:
+            query = db.query(AdminLog).filter(AdminLog.admin_username == user.username).order_by(AdminLog.timestamp.desc())
+            total = query.count()
+            logs = query.offset((page - 1) * limit).limit(limit).all()
+            activities = [{
+                "id": log.id,
+                "action": log.action_type,
+                "resource": log.resource_type,
+                "details": log.details,
+                "timestamp": log.timestamp
+            } for log in logs]
+            
+        return {"activities": activities, "total": total}
+    except Exception as e:
+        logger.error(f"Error fetching activities: {str(e)}")
+        return {"activities": [], "total": 0}
 
 @router.get("/{user_id}/enrollments")
 async def get_user_enrollments(user_id: int, db: Session = Depends(get_db)):
@@ -274,12 +333,24 @@ async def export_all_reports(
             attn = db.query(Attendance).filter(Attendance.student_id == u.id).all()
             total_attn = len(attn)
             attended = sum(1 for a in attn if a.attended)
-            attn_rate = (attended/total_attn*100) if total_attn > 0 else 0
+            
+            if total_attn == 0:
+                session_statuses = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == u.id).all()
+                attn_rate = sum(s.progress_percentage for s in session_statuses) / len(session_statuses) if session_statuses else 0
+            else:
+                attn_rate = (attended/total_attn*100)
+            
+            # Activities
+            if u.role in ['Student', 'Faculty']:
+                activities_count = db.query(StudentLog).filter(StudentLog.student_id == u.id).count()
+            else:
+                activities_count = db.query(AdminLog).filter(AdminLog.admin_username == u.username).count()
             
             data.append({
                 "Username": u.username,
                 "Email": u.email,
                 "Role": u.role,
+                "Activities": activities_count,
                 "Assignments Submitted": len(grades),
                 "Avg Assignment %": round(avg_grad, 2),
                 "Quizzes Attempted": len(quizzes),
