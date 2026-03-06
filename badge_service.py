@@ -128,6 +128,7 @@ class BadgeService:
             "min_progress": ("progress", performance.get("progress", 0))
         }
         
+        # Phase 1: Evaluate all individual rules
         for rule, threshold in criteria.items():
             if rule in mapping:
                 perf_key, actual_val = mapping[rule]
@@ -142,9 +143,37 @@ class BadgeService:
                     "actual": actual_val,
                     "pass": passed
                 }
+        
+        # Phase 2: Determine overall eligibility
+        is_eligible = True
+        
+        # 1. Assignments are STRICTLY mandatory
+        if not results.get("min_assignments_completed", {}).get("pass", True):
+            is_eligible = False
+            
+        # 2. Flexible Attendance OR Progress logic
+        # If both are marked mandatory, satisfying EITHER one is enough
+        att_is_mandatory = "min_attendance" in mandatory
+        prog_is_mandatory = "min_progress" in mandatory
+        
+        if att_is_mandatory and prog_is_mandatory:
+            att_pass = results.get("min_attendance", {}).get("pass", False)
+            prog_pass = results.get("min_progress", {}).get("pass", False)
+            if not (att_pass or prog_pass):
+                is_eligible = False
+        elif att_is_mandatory:
+            if not results.get("min_attendance", {}).get("pass", False):
+                is_eligible = False
+        elif prog_is_mandatory:
+            if not results.get("min_progress", {}).get("pass", False):
+                is_eligible = False
                 
-                if rule in mandatory and not passed:
-                    is_eligible = False
+        # 3. Check any other mandatory rules (e.g., standard assignment submission requirement)
+        for rule in mandatory:
+            if rule in ["min_attendance", "min_progress", "min_assignments_completed"]:
+                continue
+            if not results.get(rule, {}).get("pass", True):
+                is_eligible = False
                     
         return is_eligible, results
 
