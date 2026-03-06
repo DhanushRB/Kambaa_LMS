@@ -110,10 +110,12 @@ async def get_consolidated_stats(
                 attendance_rate = (attended_count / total_attendance * 100)
             
             # Assignment stats
+            submissions = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user.id).all()
             assignment_grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user.id).all()
             avg_assignment = sum(g.percentage for g in assignment_grades) / len(assignment_grades) if assignment_grades else 0
             
             # Quiz stats
+            attempts = db.query(QuizAttempt).filter(QuizAttempt.student_id == user.id).all()
             quiz_results = db.query(QuizResult).filter(QuizResult.student_id == user.id).all()
             avg_quiz = sum(r.percentage for r in quiz_results) / len(quiz_results) if quiz_results else 0
             
@@ -133,9 +135,9 @@ async def get_consolidated_stats(
                 "role": user.role,
                 "cohort_name": cohort_name,
                 "activities_count": activities_count,
-                "assignments_submitted": len(assignment_grades),
+                "assignments_submitted": len(submissions),
                 "assignments_avg": round(avg_assignment, 2),
-                "quizzes_attempted": len(quiz_results),
+                "quizzes_attempted": len(attempts),
                 "quizzes_avg": round(avg_quiz, 2),
                 "attendance_rate": round(attendance_rate, 2)
             })
@@ -160,8 +162,14 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
         enrollments_count = db.query(Enrollment).filter(Enrollment.student_id == user_id).count()
         
         # Assignment stats
+        submissions_count = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).count()
         assignment_grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user_id).all()
         avg_assignment = sum(g.percentage for g in assignment_grades) / len(assignment_grades) if assignment_grades else 0
+        
+        # Quiz stats
+        attempts_count = db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).count()
+        quiz_results = db.query(QuizResult).filter(QuizResult.student_id == user_id).all()
+        avg_quiz = sum(r.percentage for r in quiz_results) / len(quiz_results) if quiz_results else 0
         
         # Attendance stats
         attendance_records = db.query(Attendance).filter(Attendance.student_id == user_id).all()
@@ -187,7 +195,14 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
             "stats": {
                 "total_activities": activities_count,
                 "enrollments_count": enrollments_count,
-                "assignments": {"average_score": round(avg_assignment, 2)},
+                "assignments": {
+                    "count": submissions_count,
+                    "average_score": round(avg_assignment, 2)
+                },
+                "quizzes": {
+                    "count": attempts_count,
+                    "average_score": round(avg_quiz, 2)
+                },
                 "attendance": {"attendance_rate": round(attendance_rate, 2)}
             }
         }
@@ -250,37 +265,45 @@ async def get_user_enrollments(user_id: int, db: Session = Depends(get_db)):
 @router.get("/{user_id}/assignments")
 async def get_user_assignments(user_id: int, db: Session = Depends(get_db)):
     try:
-        grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user_id).all()
+        submissions = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).all()
         results = []
-        for g in grades:
-            assignment = db.query(Assignment).filter(Assignment.id == g.assignment_id).first()
+        for s in submissions:
+            assignment = db.query(Assignment).filter(Assignment.id == s.assignment_id).first()
+            grade = db.query(AssignmentGrade).filter(AssignmentGrade.submission_id == s.id).first()
             results.append({
                 "title": assignment.title if assignment else "Unknown Assignment",
-                "marks_obtained": g.marks_obtained,
-                "total_marks": g.total_marks,
-                "percentage": g.percentage,
-                "graded_at": g.graded_at
+                "submitted_at": s.submitted_at,
+                "status": s.status.value if hasattr(s.status, 'value') else str(s.status),
+                "marks_obtained": grade.marks_obtained if grade else None,
+                "total_marks": grade.total_marks if grade else (assignment.total_marks if assignment else 100),
+                "percentage": grade.percentage if grade else 0,
+                "graded_at": grade.graded_at if grade else None
             })
         return {"assignments": results}
     except Exception as e:
+        logger.error(f"Error fetching user assignments: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{user_id}/quizzes")
 async def get_user_quizzes(user_id: int, db: Session = Depends(get_db)):
     try:
-        results = db.query(QuizResult).filter(QuizResult.student_id == user_id).all()
+        attempts = db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).all()
         output = []
-        for r in results:
-            quiz = db.query(Quiz).filter(Quiz.id == r.quiz_id).first()
+        for a in attempts:
+            quiz = db.query(Quiz).filter(Quiz.id == a.quiz_id).first()
+            result = db.query(QuizResult).filter(QuizResult.attempt_id == a.id).first()
             output.append({
                 "title": quiz.title if quiz else "Unknown Quiz",
-                "marks_obtained": r.marks_obtained,
-                "total_marks": r.total_marks,
-                "percentage": r.percentage,
-                "evaluated_at": r.evaluated_at
+                "status": a.status.value if hasattr(a.status, 'value') else str(a.status),
+                "submitted_at": a.submitted_at,
+                "marks_obtained": result.marks_obtained if result else None,
+                "total_marks": result.total_marks if result else (quiz.total_marks if quiz else 100),
+                "percentage": result.percentage if result else 0,
+                "evaluated_at": result.evaluated_at if result else None
             })
         return {"quizzes": output}
     except Exception as e:
+        logger.error(f"Error fetching user quizzes: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{user_id}/attendance")
