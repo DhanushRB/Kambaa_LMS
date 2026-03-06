@@ -222,7 +222,7 @@ except ImportError as e:
 
 try:
     from user_reports_router import router as user_reports_router
-    app.include_router(user_reports_router, prefix="/api/admin")
+    app.include_router(user_reports_router, prefix="/api/admin/user-reports")
     logger.info("User reports router loaded successfully")
 except ImportError as e:
     logger.error(f"Failed to load user reports router: {e}")
