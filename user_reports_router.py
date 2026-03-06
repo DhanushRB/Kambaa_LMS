@@ -123,7 +123,6 @@ async def get_consolidated_stats(
             if user.role in ['Student', 'Faculty']:
                 activities_count = db.query(StudentLog).filter(StudentLog.student_id == user.id).count()
             else:
-                # For Admins, Presenters, etc. (if they exist in User table or fallback)
                 activities_count = db.query(AdminLog).filter(AdminLog.admin_username == user.username).count()
             
             cohort_name = db.query(Cohort.name).filter(Cohort.id == user.cohort_id).scalar()
@@ -158,16 +157,20 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
         user = db.query(User).filter(User.id == user_id).first()
         if not user: raise HTTPException(status_code=404, detail="User not found")
         
+        cohort_name = db.query(Cohort.name).filter(Cohort.id == user.cohort_id).scalar()
+        
         # Enrollment count
         enrollments_count = db.query(Enrollment).filter(Enrollment.student_id == user_id).count()
         
         # Assignment stats
-        submissions_count = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).count()
+        submissions = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).all()
+        submission_ids = [s.id for s in submissions]
+        graded_count = db.query(AssignmentGrade).filter(AssignmentGrade.submission_id.in_(submission_ids)).count() if submission_ids else 0
         assignment_grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user_id).all()
         avg_assignment = sum(g.percentage for g in assignment_grades) / len(assignment_grades) if assignment_grades else 0
         
         # Quiz stats
-        attempts_count = db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).count()
+        attempts = db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).all()
         quiz_results = db.query(QuizResult).filter(QuizResult.student_id == user_id).all()
         avg_quiz = sum(r.percentage for r in quiz_results) / len(quiz_results) if quiz_results else 0
         
@@ -192,18 +195,35 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
             activities_count = db.query(AdminLog).filter(AdminLog.admin_username == user.username).count()
         
         return {
+            "user": {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role,
+                "college": user.college,
+                "department": user.department,
+                "year": user.year,
+                "github_link": user.github_link,
+                "cohort_name": cohort_name,
+                "created_at": user.created_at
+            },
             "stats": {
                 "total_activities": activities_count,
                 "enrollments_count": enrollments_count,
                 "assignments": {
-                    "count": submissions_count,
+                    "total_submitted": len(submissions),
+                    "graded": graded_count,
                     "average_score": round(avg_assignment, 2)
                 },
                 "quizzes": {
-                    "count": attempts_count,
+                    "total_attempted": len(attempts),
                     "average_score": round(avg_quiz, 2)
                 },
-                "attendance": {"attendance_rate": round(attendance_rate, 2)}
+                "attendance": {
+                    "total_sessions": total_attendance,
+                    "attended": attended_count,
+                    "attendance_rate": round(attendance_rate, 2)
+                }
             }
         }
     except Exception as e:
@@ -218,26 +238,18 @@ async def get_user_activities(user_id: int, page: int = 1, limit: int = 50, db: 
         
         if user.role in ['Student', 'Faculty']:
             query = db.query(StudentLog).filter(StudentLog.student_id == user_id).order_by(StudentLog.timestamp.desc())
-            total = query.count()
-            logs = query.offset((page - 1) * limit).limit(limit).all()
-            activities = [{
-                "id": log.id,
-                "action": log.action_type,
-                "resource": log.resource_type,
-                "details": log.details,
-                "timestamp": log.timestamp
-            } for log in logs]
         else:
             query = db.query(AdminLog).filter(AdminLog.admin_username == user.username).order_by(AdminLog.timestamp.desc())
-            total = query.count()
-            logs = query.offset((page - 1) * limit).limit(limit).all()
-            activities = [{
-                "id": log.id,
-                "action": log.action_type,
-                "resource": log.resource_type,
-                "details": log.details,
-                "timestamp": log.timestamp
-            } for log in logs]
+            
+        total = query.count()
+        logs = query.offset((page - 1) * limit).limit(limit).all()
+        activities = [{
+            "id": log.id,
+            "action": log.action_type,
+            "resource": log.resource_type,
+            "details": log.details,
+            "timestamp": log.timestamp
+        } for log in logs]
             
         return {"activities": activities, "total": total}
     except Exception as e:
@@ -248,19 +260,21 @@ async def get_user_activities(user_id: int, page: int = 1, limit: int = 50, db: 
 async def get_user_enrollments(user_id: int, db: Session = Depends(get_db)):
     try:
         enrollments = db.query(Enrollment).filter(Enrollment.student_id == user_id).all()
-        results = []
+        output = []
         for e in enrollments:
             course = db.query(Course).filter(Course.id == e.course_id).first()
-            results.append({
+            output.append({
                 "id": e.id,
                 "course_title": course.title if course else "Unknown Course",
                 "enrolled_at": e.enrolled_at,
-                "progress": e.progress,
+                "progress_percentage": e.progress,
+                "completed": e.progress >= 100,
                 "status": e.payment_status
             })
-        return {"enrollments": results}
+        return {"enrollments": output}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching enrollments: {str(e)}")
+        return {"enrollments": []}
 
 @router.get("/{user_id}/assignments")
 async def get_user_assignments(user_id: int, db: Session = Depends(get_db)):
@@ -271,18 +285,21 @@ async def get_user_assignments(user_id: int, db: Session = Depends(get_db)):
             assignment = db.query(Assignment).filter(Assignment.id == s.assignment_id).first()
             grade = db.query(AssignmentGrade).filter(AssignmentGrade.submission_id == s.id).first()
             results.append({
-                "title": assignment.title if assignment else "Unknown Assignment",
+                "id": s.id,
+                "assignment_title": assignment.title if assignment else "Unknown Assignment",
                 "submitted_at": s.submitted_at,
                 "status": s.status.value if hasattr(s.status, 'value') else str(s.status),
-                "marks_obtained": grade.marks_obtained if grade else None,
-                "total_marks": grade.total_marks if grade else (assignment.total_marks if assignment else 100),
-                "percentage": grade.percentage if grade else 0,
-                "graded_at": grade.graded_at if grade else None
+                "grade": {
+                    "marks_obtained": grade.marks_obtained,
+                    "total_marks": grade.total_marks,
+                    "percentage": grade.percentage,
+                    "feedback": grade.feedback
+                } if grade else None
             })
         return {"assignments": results}
     except Exception as e:
-        logger.error(f"Error fetching user assignments: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching assignments: {str(e)}")
+        return {"assignments": []}
 
 @router.get("/{user_id}/quizzes")
 async def get_user_quizzes(user_id: int, db: Session = Depends(get_db)):
@@ -293,18 +310,22 @@ async def get_user_quizzes(user_id: int, db: Session = Depends(get_db)):
             quiz = db.query(Quiz).filter(Quiz.id == a.quiz_id).first()
             result = db.query(QuizResult).filter(QuizResult.attempt_id == a.id).first()
             output.append({
-                "title": quiz.title if quiz else "Unknown Quiz",
+                "id": a.id,
+                "quiz_title": quiz.title if quiz else "Unknown Quiz",
                 "status": a.status.value if hasattr(a.status, 'value') else str(a.status),
+                "started_at": a.started_at,
                 "submitted_at": a.submitted_at,
-                "marks_obtained": result.marks_obtained if result else None,
-                "total_marks": result.total_marks if result else (quiz.total_marks if quiz else 100),
-                "percentage": result.percentage if result else 0,
-                "evaluated_at": result.evaluated_at if result else None
+                "result": {
+                    "marks_obtained": result.marks_obtained,
+                    "total_marks": result.total_marks,
+                    "percentage": result.percentage,
+                    "grade": result.grade
+                } if result else None
             })
         return {"quizzes": output}
     except Exception as e:
-        logger.error(f"Error fetching user quizzes: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching quizzes: {str(e)}")
+        return {"quizzes": []}
 
 @router.get("/{user_id}/attendance")
 async def get_user_attendance(user_id: int, db: Session = Depends(get_db)):
@@ -314,18 +335,20 @@ async def get_user_attendance(user_id: int, db: Session = Depends(get_db)):
         for r in records:
             session = db.query(SessionModel).filter(SessionModel.id == r.session_id).first()
             output.append({
+                "id": r.id,
                 "session_title": session.title if session else f"Session {r.session_id}",
-                "attended": r.attended,
-                "join_time": r.join_time,
+                "marked_at": r.join_time or r.created_at,
+                "status": "present" if r.attended else "absent",
                 "duration_minutes": r.duration_minutes
             })
         return {"attendance": output}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error fetching attendance: {str(e)}")
+        return {"attendance": []}
 
 @router.get("/{user_id}/export")
 async def export_user_report(user_id: int, report_type: str = "summary", db: Session = Depends(get_db)):
-    # Implementation for individual export if needed
+    # Legacy export endpoint placeholder
     pass
 
 @router.get("/export-all")
@@ -337,7 +360,6 @@ async def export_all_reports(
     db: Session = Depends(get_db)
 ):
     try:
-        # Reusing consolidated stats logic to get data
         query = db.query(User)
         if search: query = query.filter(or_(User.username.ilike(f"%{search}%"), User.email.ilike(f"%{search}%")))
         if role: query = query.filter(User.role == role)
@@ -346,7 +368,6 @@ async def export_all_reports(
         users = query.all()
         data = []
         for u in users:
-            # Basic stats similar to consolidated
             grades = db.query(AssignmentGrade).filter(AssignmentGrade.student_id == u.id).all()
             avg_grad = sum(g.percentage for g in grades) / len(grades) if grades else 0
             
@@ -358,25 +379,24 @@ async def export_all_reports(
             attended = sum(1 for a in attn if a.attended)
             
             if total_attn == 0:
-                session_statuses = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == u.id).all()
-                attn_rate = sum(s.progress_percentage for s in session_statuses) / len(session_statuses) if session_statuses else 0
+                ss = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == u.id).all()
+                attn_rate = sum(s.progress_percentage for s in ss) / len(ss) if ss else 0
             else:
                 attn_rate = (attended/total_attn*100)
             
-            # Activities
             if u.role in ['Student', 'Faculty']:
-                activities_count = db.query(StudentLog).filter(StudentLog.student_id == u.id).count()
+                act = db.query(StudentLog).filter(StudentLog.student_id == u.id).count()
             else:
-                activities_count = db.query(AdminLog).filter(AdminLog.admin_username == u.username).count()
+                act = db.query(AdminLog).filter(AdminLog.admin_username == u.username).count()
             
             data.append({
                 "Username": u.username,
                 "Email": u.email,
                 "Role": u.role,
-                "Activities": activities_count,
-                "Assignments Submitted": len(grades),
+                "Activities": act,
+                "Assignments Submitted": db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == u.id).count(),
                 "Avg Assignment %": round(avg_grad, 2),
-                "Quizzes Attempted": len(quizzes),
+                "Quizzes Attempted": db.query(QuizAttempt).filter(QuizAttempt.student_id == u.id).count(),
                 "Avg Quiz %": round(avg_quiz, 2),
                 "Attendance %": round(attn_rate, 2)
             })
@@ -387,9 +407,7 @@ async def export_all_reports(
             df.to_excel(writer, index=False, sheet_name='User Reports')
             
         output.seek(0)
-        headers = {
-            'Content-Disposition': 'attachment; filename="consolidated_reports.xlsx"'
-        }
+        headers = {'Content-Disposition': 'attachment; filename="consolidated_reports.xlsx"'}
         return Response(content=output.getvalue(), headers=headers, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     except Exception as e:
         logger.error(f"Export error: {str(e)}")
