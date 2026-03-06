@@ -5,13 +5,56 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import io
 import pandas as pd
-from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course, AdminLog, StudentLog, StudentSessionStatus
+from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course, AdminLog, StudentLog, StudentSessionStatus, CohortCourse
+from cohort_specific_models import CohortCourseSession, CohortAttendance, CohortSpecificCourse, CohortSpecificEnrollment
 from assignment_quiz_models import Assignment, AssignmentSubmission, AssignmentGrade, Quiz, QuizAttempt, QuizResult
 from auth import get_current_user_any_role
 import logging
 
 router = APIRouter(tags=["user_reports"])
 logger = logging.getLogger(__name__)
+
+def calculate_live_progress(db: Session, student_id: int, course_id: int, course_type: str = "global"):
+    """Calculate course progress by averaging session progress percentages"""
+    try:
+        from database import Module, Session as SessionModel
+        from cohort_specific_models import CohortCourseModule, CohortCourseSession
+        
+        if course_type == "cohort":
+            modules = db.query(CohortCourseModule).filter(CohortCourseModule.course_id == course_id).all()
+            module_ids = [m.id for m in modules]
+            sessions = db.query(CohortCourseSession).filter(CohortCourseSession.module_id.in_(module_ids)).all() if module_ids else []
+            s_type = "cohort"
+        else:
+            modules = db.query(Module).filter(Module.course_id == course_id).all()
+            module_ids = [m.id for m in modules]
+            sessions = db.query(SessionModel).filter(SessionModel.module_id.in_(module_ids)).all() if module_ids else []
+            s_type = "global"
+            
+        if not sessions:
+            return 0
+            
+        session_ids = [s.id for s in sessions]
+        statuses = db.query(StudentSessionStatus).filter(
+            StudentSessionStatus.student_id == student_id,
+            StudentSessionStatus.session_id.in_(session_ids),
+            StudentSessionStatus.session_type == s_type
+        ).all()
+        
+        if not statuses:
+            return 0
+            
+        # Group by session_id to handle duplicates, taking the max progress
+        session_progress = {}
+        for s in statuses:
+            if s.session_id not in session_progress or (s.progress_percentage or 0) > session_progress[s.session_id]:
+                session_progress[s.session_id] = s.progress_percentage or 0
+                
+        total_progress = sum(session_progress.values())
+        return round(total_progress / len(sessions), 1)
+    except Exception as e:
+        logger.error(f"Error calculating live progress: {str(e)}")
+        return 0
 
 @router.get("/users")
 async def get_report_users(
@@ -159,8 +202,16 @@ async def get_user_summary(user_id: int, db: Session = Depends(get_db)):
         
         cohort_name = db.query(Cohort.name).filter(Cohort.id == user.cohort_id).scalar()
         
-        # Enrollment count
-        enrollments_count = db.query(Enrollment).filter(Enrollment.student_id == user_id).count()
+        # Enrollment count (Global + Cohort Assigned + Cohort Specific)
+        global_enrolled = db.query(Enrollment.course_id).filter(Enrollment.student_id == user_id).all()
+        global_ids = {e.course_id for e in global_enrolled}
+        
+        cohort_assigned = db.query(CohortCourse.course_id).filter(CohortCourse.cohort_id == user.cohort_id).all()
+        cohort_global_ids = {c.course_id for c in cohort_assigned}
+        
+        cohort_specific = db.query(CohortSpecificCourse).filter(CohortSpecificCourse.cohort_id == user.cohort_id).count()
+        
+        enrollments_count = len(global_ids | cohort_global_ids) + cohort_specific
         
         # Assignment stats
         submissions = db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).all()
@@ -259,18 +310,74 @@ async def get_user_activities(user_id: int, page: int = 1, limit: int = 50, db: 
 @router.get("/{user_id}/enrollments")
 async def get_user_enrollments(user_id: int, db: Session = Depends(get_db)):
     try:
-        enrollments = db.query(Enrollment).filter(Enrollment.student_id == user_id).all()
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user: return {"enrollments": []}
+        
         output = []
+        seen_global_ids = set()
+        
+        # 1. Direct Global Enrollments
+        enrollments = db.query(Enrollment).filter(Enrollment.student_id == user_id).all()
         for e in enrollments:
             course = db.query(Course).filter(Course.id == e.course_id).first()
+            seen_global_ids.add(e.course_id)
+            
+            # Calculate live progress
+            prog_pct = calculate_live_progress(db, user_id, e.course_id, "global")
+            
             output.append({
-                "id": e.id,
-                "course_title": course.title if course else "Unknown Course",
+                "id": f"global_{e.id}",
+                "course_title": course.title if course else "Unknown Global Course",
                 "enrolled_at": e.enrolled_at,
-                "progress_percentage": e.progress,
-                "completed": e.progress >= 100,
-                "status": e.payment_status
+                "progress_percentage": prog_pct,
+                "completed": prog_pct >= 100,
+                "status": e.payment_status,
+                "type": "Global"
             })
+            
+        # 2. Cohort-Assigned Global Courses (if not already in #1)
+        if user.cohort_id:
+            cohort_courses = db.query(CohortCourse).filter(CohortCourse.cohort_id == user.cohort_id).all()
+            for cc in cohort_courses:
+                if cc.course_id not in seen_global_ids:
+                    course = db.query(Course).filter(Course.id == cc.course_id).first()
+                    
+                    # Calculate live progress
+                    prog_pct = calculate_live_progress(db, user_id, cc.course_id, "global")
+                    
+                    output.append({
+                        "id": f"cohort_assigned_{cc.id}",
+                        "course_title": course.title if course else f"Course {cc.course_id}",
+                        "enrolled_at": cc.assigned_at,
+                        "progress_percentage": prog_pct,
+                        "completed": prog_pct >= 100,
+                        "status": "Assigned",
+                        "type": "Cohort (Global)"
+                    })
+                    
+        # 3. Cohort-Specific Courses
+        if user.cohort_id:
+            cohort_specific = db.query(CohortSpecificCourse).filter(CohortSpecificCourse.cohort_id == user.cohort_id).all()
+            for csc in cohort_specific:
+                # Calculate live progress
+                prog_pct = calculate_live_progress(db, user_id, csc.id, "cohort")
+                
+                # Check for progress record (for enroll date)
+                prog_rec = db.query(CohortSpecificEnrollment).filter(
+                    CohortSpecificEnrollment.student_id == user_id,
+                    CohortSpecificEnrollment.course_id == csc.id
+                ).first()
+                
+                output.append({
+                    "id": f"cohort_spec_{csc.id}",
+                    "course_title": csc.title,
+                    "enrolled_at": prog_rec.enrolled_at if prog_rec else csc.created_at,
+                    "progress_percentage": prog_pct,
+                    "completed": prog_pct >= 100,
+                    "status": "Active",
+                    "type": "Cohort Specific"
+                })
+                
         return {"enrollments": output}
     except Exception as e:
         logger.error(f"Error fetching enrollments: {str(e)}")
@@ -330,17 +437,67 @@ async def get_user_quizzes(user_id: int, db: Session = Depends(get_db)):
 @router.get("/{user_id}/attendance")
 async def get_user_attendance(user_id: int, db: Session = Depends(get_db)):
     try:
-        records = db.query(Attendance).filter(Attendance.student_id == user_id).all()
+        # Get formal attendance records (Global)
+        global_records = db.query(Attendance).filter(Attendance.student_id == user_id).all()
+        
+        # Get formal attendance records (Cohort-specific)
+        cohort_records = db.query(CohortAttendance).filter(CohortAttendance.student_id == user_id).all()
+        
+        # Get session statuses (fallback/additional info)
+        session_statuses = db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == user_id).all()
+        
         output = []
-        for r in records:
+        # Track which sessions we've already covered via formal attendance
+        # Format: (session_id, session_type)
+        covered_sessions = set()
+        
+        # Process global attendance
+        for r in global_records:
             session = db.query(SessionModel).filter(SessionModel.id == r.session_id).first()
+            covered_sessions.add((r.session_id, "global"))
             output.append({
-                "id": r.id,
+                "id": f"attn_global_{r.id}",
                 "session_title": session.title if session else f"Session {r.session_id}",
                 "marked_at": r.join_time or r.created_at,
                 "status": "present" if r.attended else "absent",
-                "duration_minutes": r.duration_minutes
+                "duration_minutes": r.duration_minutes,
+                "type": "Live Session (Global)"
             })
+            
+        # Process cohort attendance
+        for r in cohort_records:
+            session = db.query(CohortCourseSession).filter(CohortCourseSession.id == r.session_id).first()
+            covered_sessions.add((r.session_id, "cohort"))
+            output.append({
+                "id": f"attn_cohort_{r.id}",
+                "session_title": session.title if session else f"Session {r.session_id}",
+                "marked_at": r.first_join_time or r.created_at,
+                "status": "present" if r.attended else "absent",
+                "duration_minutes": r.total_duration_minutes,
+                "type": "Live Session (Cohort)"
+            })
+            
+        # Add session statuses for sessions not covered by formal attendance
+        for s in session_statuses:
+            if (s.session_id, s.session_type) not in covered_sessions:
+                if s.session_type == "cohort":
+                    session = db.query(CohortCourseSession).filter(CohortCourseSession.id == s.session_id).first()
+                else:
+                    session = db.query(SessionModel).filter(SessionModel.id == s.session_id).first()
+                
+                output.append({
+                    "id": f"status_{s.id}",
+                    "session_title": session.title if session else f"Session {s.session_id}",
+                    "marked_at": s.completed_at or s.started_at or datetime.utcnow(),
+                    "status": "present" if s.status == "Completed" else "absent" if s.status == "Not Attended" else "in_progress",
+                    "duration_minutes": 0,
+                    "progress": s.progress_percentage,
+                    "type": f"Self-paced ({s.session_type.capitalize()})"
+                })
+                
+        # Sort by date
+        output.sort(key=lambda x: x["marked_at"] if x["marked_at"] else datetime.min, reverse=True)
+            
         return {"attendance": output}
     except Exception as e:
         logger.error(f"Error fetching attendance: {str(e)}")

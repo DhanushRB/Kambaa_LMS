@@ -123,7 +123,7 @@ class BadgeService:
         # Map criteria keys to performance keys
         mapping = {
             "min_attendance": ("attendance", performance.get("attendance", 0)),
-            "min_assignment_score": ("avg_score", performance.get("avg_score", 0)),
+            "min_assignments_completed": ("submitted_count", performance.get("submitted_count", 0)),
             "require_assignment_submission": ("assignment_submission_status", performance.get("assignment_submission_status", False)),
             "min_progress": ("progress", performance.get("progress", 0))
         }
