@@ -268,5 +268,58 @@ class DuplicateAnalysisResponse(BaseModel):
     total_checked: int
     duplicates_found: int
     invalid_found: int
-    results: List[EmailAnalysisResult]
+
+class BadgeConfigBase(BaseModel):
+    title: str = Field(..., min_length=3, max_length=200)
+    description: Optional[str] = None
+    level_id: Optional[int] = None
+    cohort_id: Optional[int] = None
+    course_id: Optional[int] = None
+    cohort_specific_course_id: Optional[int] = None
+    icon_url: Optional[str] = None
+    week_start: int = Field(..., ge=1)
+    week_end: int = Field(..., ge=1)
+    criteria: dict
+    mandatory_checks: List[str]
+    is_active: bool = True
+
+class BadgeConfigCreate(BadgeConfigBase):
+    pass
+
+class BadgeConfigUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    level_id: Optional[int] = None
+    cohort_id: Optional[int] = None
+    course_id: Optional[int] = None
+    cohort_specific_course_id: Optional[int] = None
+    icon_url: Optional[str] = None
+    week_start: Optional[int] = None
+    week_end: Optional[int] = None
+    criteria: Optional[dict] = None
+    mandatory_checks: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+class BadgeConfigResponse(BadgeConfigBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    course_title: Optional[str] = None
+    cohort_name: Optional[str] = None
+    is_cohort_specific: bool = False
+    
+    class Config:
+        from_attributes = True
+
+class AwardedBadgeResponse(BaseModel):
+    id: int
+    user_id: int
+    badge_config_id: int
+    awarded_at: datetime
+    criteria_snapshot: Optional[dict] = None
+    badge_title: Optional[str] = None
+    badge_icon: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 

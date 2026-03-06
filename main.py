@@ -73,7 +73,7 @@ UPLOAD_BASE_DIR.mkdir(exist_ok=True)
 (UPLOAD_BASE_DIR / "resources").mkdir(exist_ok=True)
 (UPLOAD_BASE_DIR / "recordings").mkdir(exist_ok=True)
 (UPLOAD_BASE_DIR / "certificates").mkdir(exist_ok=True)
-
+(UPLOAD_BASE_DIR / "badge_icons").mkdir(exist_ok=True)
 # Import and include new modular routers
 try:
     from migration_endpoint import router as migration_router
@@ -484,6 +484,13 @@ try:
     logger.info("Feedback router loaded successfully")
 except ImportError as e:
     logger.error(f"Failed to load feedback router: {e}")
+
+try:
+    from badge_api import router as badge_router
+    app.include_router(badge_router)
+    logger.info("Badge router loaded successfully")
+except ImportError as e:
+    logger.error(f"Failed to load badge router: {e}")
 
 # Fallback router to ensure module update endpoint exists
 from fastapi import APIRouter

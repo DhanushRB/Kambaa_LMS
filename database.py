@@ -735,4 +735,7 @@ from cohort_specific_models import CohortSpecificCourse, CohortCourseModule, Coh
 # Import session models for single device login
 from session_models import UserSession
 
+# Import badge models to ensure they're included
+from badge_models import BadgeConfiguration, AwardedBadge, BadgeAuditLog
+
 Base.metadata.create_all(bind=engine)

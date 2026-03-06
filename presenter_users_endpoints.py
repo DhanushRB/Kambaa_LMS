@@ -21,18 +21,26 @@ async def get_presenter_users(
     search: Optional[str] = None,
     role: Optional[str] = None,
     college: Optional[str] = None,
+    cohort_id: Optional[int] = None,
     current_presenter: Presenter = Depends(get_current_presenter),
     db: Session = Depends(get_db)
 ):
     """Get users that belong to cohorts assigned to the current presenter"""
     try:
         # Get cohorts assigned to the current presenter
-        presenter_cohorts = db.query(PresenterCohort).filter(
+        presenter_cohorts_query = db.query(PresenterCohort).filter(
             PresenterCohort.presenter_id == current_presenter.id
-        ).all()
+        )
+        
+        if cohort_id:
+            presenter_cohorts_query = presenter_cohorts_query.filter(
+                PresenterCohort.cohort_id == cohort_id
+            )
+            
+        presenter_cohorts = presenter_cohorts_query.all()
         
         if not presenter_cohorts:
-            # If presenter has no assigned cohorts, return empty result
+            # If presenter has no assigned cohorts (or filtered out), return empty result
             return {
                 "users": [],
                 "total": 0,
@@ -112,6 +120,35 @@ async def get_presenter_users(
         logger.error(f"Get presenter users error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch users")
 
+@router.get("/presenter/colleges")
+async def get_presenter_colleges(
+    current_presenter: Presenter = Depends(get_current_presenter),
+    db: Session = Depends(get_db)
+):
+    """Get unique colleges from users assigned to the presenter's cohorts"""
+    try:
+        # Get cohort IDs assigned to this presenter
+        presenter_cohorts = db.query(PresenterCohort.cohort_id).filter(
+            PresenterCohort.presenter_id == current_presenter.id
+        ).all()
+        assigned_cohort_ids = [pc.cohort_id for pc in presenter_cohorts]
+
+        if not assigned_cohort_ids:
+            return {"colleges": []}
+
+        # Get unique colleges from users in these cohorts
+        colleges = db.query(User.college).join(UserCohort).filter(
+            UserCohort.cohort_id.in_(assigned_cohort_ids),
+            User.college != None,
+            User.college != ""
+        ).distinct().all()
+
+        college_list = [c.college for c in colleges]
+        return {"colleges": sorted(college_list)}
+    except Exception as e:
+        logger.error(f"Get presenter colleges error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch colleges")
+
 @router.get("/presenter/cohorts")
 async def get_presenter_cohorts(
     current_presenter: Presenter = Depends(get_current_presenter),
@@ -127,8 +164,13 @@ async def get_presenter_cohorts(
         cohort_list = []
         for pc in presenter_cohorts:
             cohort = pc.cohort
-            # Get user count for each cohort
-            user_count = db.query(UserCohort).filter(UserCohort.cohort_id == cohort.id).count()
+            # Get user count for each cohort (both from mapping table and direct cohort_id)
+            user_cohort_ids = db.query(UserCohort.user_id).filter(UserCohort.cohort_id == cohort.id)
+            direct_cohort_users = db.query(User.id).filter(User.cohort_id == cohort.id)
+            
+            # Use UNION/Set to get unique users from both sources
+            all_student_ids = user_cohort_ids.union(direct_cohort_users).all()
+            user_count = len(all_student_ids)
             
             cohort_list.append({
                 "id": cohort.id,
@@ -170,15 +212,34 @@ async def get_presenter_cohort_details(
         if not cohort:
             raise HTTPException(status_code=404, detail="Cohort not found")
         
-        # Get users in cohort
+        # Get users in cohort (from both mapping table and direct cohort_id)
+        users_map = {}
+        
+        # 1. From UserCohort table
         user_cohorts = db.query(UserCohort).filter(UserCohort.cohort_id == cohort_id).all()
-        users = [{
-            "id": uc.user.id,
-            "username": uc.user.username,
-            "email": uc.user.email,
-            "college_name": uc.user.college,
-            "assigned_at": uc.assigned_at
-        } for uc in user_cohorts]
+        for uc in user_cohorts:
+            if uc.user_id not in users_map:
+                users_map[uc.user_id] = {
+                    "id": uc.user.id,
+                    "username": uc.user.username,
+                    "email": uc.user.email,
+                    "college_name": uc.user.college,
+                    "assigned_at": uc.assigned_at
+                }
+        
+        # 2. From direct User.cohort_id
+        direct_users = db.query(User).filter(User.cohort_id == cohort_id).all()
+        for user in direct_users:
+            if user.id not in users_map:
+                users_map[user.id] = {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "college_name": user.college,
+                    "assigned_at": user.created_at # Use created_at as fallback
+                }
+        
+        users = list(users_map.values())
         
         # Get cohort courses (both cohort-specific and global courses assigned to cohort)
         from database import CohortCourse, Course

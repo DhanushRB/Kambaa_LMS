@@ -1,15 +1,20 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from database import get_db, User, Admin, Presenter, Course, Module, Session as SessionModel, Enrollment, Cohort, UserCohort, CohortCourse, PresenterCohort, Resource, StudentSessionStatus, StudentModuleStatus, Attendance
+from database import (
+    get_db, User, Admin, Presenter, Course, Module, Session as SessionModel, 
+    Enrollment, Cohort, UserCohort, CohortCourse, PresenterCohort, Resource, 
+    StudentSessionStatus, StudentModuleStatus, Attendance
+)
+from assignment_quiz_models import Quiz, Assignment
+from cohort_specific_models import CohortSpecificCourse, CohortCourseSession, CohortCourseModule, CohortCourseResource
 from auth import get_current_presenter
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
-router = APIRouter()
+router = APIRouter(prefix="/presenter", tags=["presenter_dashboard"])
 logger = logging.getLogger(__name__)
 
-@router.get("/presenter/dashboard")
+@router.get("/dashboard")
 async def get_presenter_dashboard(
     current_presenter: Presenter = Depends(get_current_presenter),
     db: Session = Depends(get_db)
@@ -28,28 +33,51 @@ async def get_presenter_dashboard(
         upcoming_sessions = []
         
         if assigned_cohort_ids:
-            # Get courses assigned to presenter's cohorts
+            # 1. Get global courses assigned to presenter's cohorts
             cohort_courses = db.query(CohortCourse).filter(
                 CohortCourse.cohort_id.in_(assigned_cohort_ids)
             ).all()
-            course_ids = [cc.course_id for cc in cohort_courses]
+            global_course_ids = [cc.course_id for cc in cohort_courses]
             
-            if course_ids:
-                # Query sessions for these courses only
-                upcoming_sessions = db.query(SessionModel).join(
+            # 2. Get sessions for global courses
+            if global_course_ids:
+                global_sessions = db.query(SessionModel).join(
                     Module, SessionModel.module_id == Module.id
-                ).join(
-                    Course, Module.course_id == Course.id
                 ).filter(
-                    Course.id.in_(course_ids),
+                    Module.course_id.in_(global_course_ids),
                     SessionModel.scheduled_time.isnot(None),
                     SessionModel.scheduled_time > current_time
-                ).order_by(SessionModel.scheduled_time).limit(10).all()
+                ).all()
+                upcoming_sessions.extend(global_sessions)
+            
+            # 3. Get sessions for cohort-specific courses
+            from cohort_specific_models import CohortCourseSession, CohortCourseModule
+            cohort_specific_sessions = db.query(CohortCourseSession).join(
+                CohortCourseModule, CohortCourseSession.module_id == CohortCourseModule.id
+            ).join(
+                CohortSpecificCourse, CohortCourseModule.course_id == CohortSpecificCourse.id
+            ).filter(
+                CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids),
+                CohortCourseSession.scheduled_time.isnot(None),
+                CohortCourseSession.scheduled_time > current_time
+            ).all()
+            upcoming_sessions.extend(cohort_specific_sessions)
+
+        # Sort combined sessions and limit
+        upcoming_sessions.sort(key=lambda s: s.scheduled_time)
+        upcoming_sessions = upcoming_sessions[:10]
         
         sessions_data = []
         for session in upcoming_sessions:
-            module = db.query(Module).filter(Module.id == session.module_id).first()
-            course = db.query(Course).filter(Course.id == module.course_id).first() if module else None
+            # Handle both global and cohort-specific sessions
+            is_cohort_specific = hasattr(session, 'module') and hasattr(session.module, 'course') and isinstance(session.module.course, CohortSpecificCourse)
+            
+            if is_cohort_specific:
+                module = session.module
+                course = module.course
+            else:
+                module = db.query(Module).filter(Module.id == session.module_id).first()
+                course = db.query(Course).filter(Course.id == module.course_id).first() if module else None
             
             sessions_data.append({
                 "id": session.id,
@@ -60,144 +88,179 @@ async def get_presenter_dashboard(
                 "scheduled_time": session.scheduled_time.strftime("%H:%M") if session.scheduled_time else None,
                 "scheduled_datetime": session.scheduled_time,
                 "duration_minutes": session.duration_minutes,
-                "zoom_link": session.zoom_link,
+                "zoom_link": getattr(session, 'zoom_link', None),
                 "session_number": session.session_number,
-                "week_number": module.week_number if module else None
+                "week_number": module.week_number if module else None,
+                "is_cohort_specific": is_cohort_specific
             })
         
         if not assigned_cohort_ids:
-            # Show all courses when no cohorts assigned
-            total_courses = db.query(Course).count()
-            total_students = db.query(User).filter(User.role == "Student").count()
-            total_modules = db.query(Module).count()
-            total_sessions = db.query(SessionModel).count()
-            total_enrollments = db.query(Enrollment).count()
-            active_enrollments = db.query(Enrollment).filter(Enrollment.progress > 0).count()
-            
+            # Fast return for unassigned presenters
             return {
-                "users": {
-                    "total_students": total_students,
-                    "total_admins": db.query(Admin).count(),
-                    "growth_rate": 12.5
-                },
-                "courses": {
-                    "total_courses": total_courses,
-                    "total_modules": total_modules,
-                    "total_sessions": total_sessions,
-                    "completed_sessions": total_sessions
-                },
-                "engagement": {
-                    "total_enrollments": total_enrollments,
-                    "active_enrollments": active_enrollments,
-                    "engagement_rate": (active_enrollments / total_enrollments * 100) if total_enrollments > 0 else 0,
-                    "total_resources": db.query(Resource).count(),
-                    "total_quizzes": 0
-                },
-                "performance": {
-                    "attendance_rate": round(db.query(func.avg(StudentSessionStatus.progress_percentage)).scalar() or 0, 2),
-                    "completion_rate": round(db.query(func.avg(StudentModuleStatus.progress_percentage)).scalar() or 0, 2),
-                    "average_quiz_score": 0, # Placeholder until quizzes integrated
-                    "target_attendance": 80.0,
-                    "target_completion": 90.0,
-                    "target_quiz_score": 75.0
-                },
-                "system_health": {
-                    "database_status": "healthy",
-                    "api_response_time": "45ms",
-                    "uptime": "99.9%",
-                    "storage_usage": "65%"
-                },
-                "upcoming_sessions": sessions_data,
-                "total_upcoming": len(sessions_data)
+                "users": {"total_students": 0, "total_admins": db.query(Admin).count(), "growth_rate": 0},
+                "courses": {"total_courses": 0, "total_modules": 0, "total_sessions": 0, "completed_sessions": 0},
+                "engagement": {"total_enrollments": 0, "active_enrollments": 0, "engagement_rate": 0, "total_resources": 0},
+                "performance": {"attendance_rate": 0, "completion_rate": 0, "average_quiz_score": 0},
+                "upcoming_sessions": [], "total_upcoming": 0
             }
         
-        # User statistics - only students in assigned cohorts
-        total_students = db.query(User).join(UserCohort, User.id == UserCohort.user_id).filter(
-            UserCohort.cohort_id.in_(assigned_cohort_ids),
+        # --- AGGREGATE STATS ---
+        
+        # Students in assigned cohorts (Checking both UserCohort and User.cohort_id)
+        total_students = db.query(func.count(func.distinct(User.id))).outerjoin(UserCohort, User.id == UserCohort.user_id).filter(
+            or_(
+                UserCohort.cohort_id.in_(assigned_cohort_ids),
+                User.cohort_id.in_(assigned_cohort_ids)
+            ),
             User.role == "Student"
+        ).scalar() or 0
+        
+        # Course counts (Global assigned to cohorts + CohortSpecific)
+        global_courses_count = db.query(func.count(func.distinct(CohortCourse.course_id))).filter(
+            CohortCourse.cohort_id.in_(assigned_cohort_ids)
+        ).scalar() or 0
+        
+        cohort_specific_courses_count = db.query(CohortSpecificCourse).filter(
+            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
         ).count()
         
-        total_admins = db.query(Admin).count()
+        total_courses = global_courses_count + cohort_specific_courses_count
         
-        # Course statistics - courses assigned to presenter's cohorts
-        cohort_courses = db.query(CohortCourse).filter(
-            CohortCourse.cohort_id.in_(assigned_cohort_ids)
-        ).all() if assigned_cohort_ids else []
+        # Modules and Sessions (Combined)
+        total_modules = db.query(Module).filter(Module.course_id.in_(global_course_ids)).count() if global_course_ids else 0
+        total_modules += db.query(CohortCourseModule).join(CohortSpecificCourse).filter(
+            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
+        ).count()
         
-        course_ids = [cc.course_id for cc in cohort_courses]
-        total_courses = len(set(course_ids)) if course_ids else 0
+        total_sessions = db.query(SessionModel).join(Module).filter(Module.course_id.in_(global_course_ids)).count() if global_course_ids else 0
+        total_sessions += db.query(CohortCourseSession).join(CohortCourseModule).join(CohortSpecificCourse).filter(
+            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
+        ).count()
         
-        total_modules = db.query(Module).filter(
-            Module.course_id.in_(course_ids)
-        ).count() if course_ids else 0
+        # Resource counts
+        total_resources = db.query(Resource).join(SessionModel).join(Module).filter(Module.course_id.in_(global_course_ids)).count() if global_course_ids else 0
+        total_resources += db.query(CohortCourseResource).join(CohortCourseSession).join(CohortCourseModule).join(CohortSpecificCourse).filter(
+            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
+        ).count()
         
-        total_sessions = db.query(SessionModel).join(
-            Module, SessionModel.module_id == Module.id
-        ).filter(
-            Module.course_id.in_(course_ids)
-        ).count() if course_ids else 0
+        # Quiz counts
+        # 1. Global sessions quizzes
+        global_sessions_ids = [s.id for s in db.query(SessionModel.id).join(Module).filter(Module.course_id.in_(global_course_ids)).all()] if global_course_ids else []
+        total_quizzes = db.query(Quiz).filter(
+            Quiz.session_type == "global",
+            Quiz.session_id.in_(global_sessions_ids)
+        ).count() if global_sessions_ids else 0
         
-        completed_sessions = total_sessions  # Simplified
+        # 2. Cohort specific sessions quizzes
+        cohort_sessions_ids = [s.id for s in db.query(CohortCourseSession.id).join(CohortCourseModule).join(CohortSpecificCourse).filter(
+            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
+        ).all()]
+        total_quizzes += db.query(Quiz).filter(
+            Quiz.session_type == "cohort",
+            Quiz.session_id.in_(cohort_sessions_ids)
+        ).count() if cohort_sessions_ids else 0
         
-        # Engagement statistics - only for assigned cohorts
-        total_enrollments = db.query(Enrollment).filter(
-            Enrollment.cohort_id.in_(assigned_cohort_ids)
-        ).count() if assigned_cohort_ids else 0
+        # Enrollment stats
+        total_enrollments = db.query(Enrollment).filter(Enrollment.cohort_id.in_(assigned_cohort_ids)).count()
+        if total_enrollments == 0:
+            total_enrollments = total_students # Student count as proxy if enrollment empty
+            
+        active_enrollments = db.query(Enrollment).filter(Enrollment.cohort_id.in_(assigned_cohort_ids), Enrollment.progress > 0).count()
+        if active_enrollments == 0:
+            # Check progress tables if enrollment doesn't track it
+            active_enrollments = db.query(func.count(func.distinct(StudentModuleStatus.student_id))).outerjoin(UserCohort, StudentModuleStatus.student_id == UserCohort.user_id).outerjoin(User, StudentModuleStatus.student_id == User.id).filter(
+                or_(UserCohort.cohort_id.in_(assigned_cohort_ids), User.cohort_id.in_(assigned_cohort_ids))
+            ).scalar() or 0
         
-        active_enrollments = db.query(Enrollment).filter(
-            Enrollment.cohort_id.in_(assigned_cohort_ids),
-            Enrollment.progress > 0
-        ).count() if assigned_cohort_ids else 0
+        # Performance rates
+        avg_attendance = db.query(func.avg(StudentSessionStatus.progress_percentage)).outerjoin(UserCohort, StudentSessionStatus.student_id == UserCohort.user_id).outerjoin(User, StudentSessionStatus.student_id == User.id).filter(
+            or_(UserCohort.cohort_id.in_(assigned_cohort_ids), User.cohort_id.in_(assigned_cohort_ids))
+        ).scalar() or 0
         
-        total_resources = db.query(Resource).join(
-            SessionModel, Resource.session_id == SessionModel.id
-        ).join(
-            Module, SessionModel.module_id == Module.id
-        ).filter(
-            Module.course_id.in_(course_ids)
-        ).count() if course_ids else 0
+        avg_completion = db.query(func.avg(StudentModuleStatus.progress_percentage)).outerjoin(UserCohort, StudentModuleStatus.student_id == UserCohort.user_id).outerjoin(User, StudentModuleStatus.student_id == User.id).filter(
+            or_(UserCohort.cohort_id.in_(assigned_cohort_ids), User.cohort_id.in_(assigned_cohort_ids))
+        ).scalar() or 0
         
         return {
             "users": {
                 "total_students": total_students,
-                "total_admins": total_admins,
-                "growth_rate": 12.5
+                "total_admins": db.query(Admin).count(),
+                "growth_rate": 0
             },
             "courses": {
                 "total_courses": total_courses,
                 "total_modules": total_modules,
                 "total_sessions": total_sessions,
-                "completed_sessions": completed_sessions
+                "completed_sessions": total_sessions
             },
             "engagement": {
                 "total_enrollments": total_enrollments,
                 "active_enrollments": active_enrollments,
                 "engagement_rate": (active_enrollments / total_enrollments * 100) if total_enrollments > 0 else 0,
                 "total_resources": total_resources,
-                "total_quizzes": 0
+                "total_quizzes": total_quizzes
             },
             "performance": {
-                "attendance_rate": round(db.query(func.avg(StudentSessionStatus.progress_percentage)).join(UserCohort, StudentSessionStatus.student_id == UserCohort.user_id).filter(UserCohort.cohort_id.in_(assigned_cohort_ids)).scalar() or 0, 2),
-                "completion_rate": round(db.query(func.avg(StudentModuleStatus.progress_percentage)).join(UserCohort, StudentModuleStatus.student_id == UserCohort.user_id).filter(UserCohort.cohort_id.in_(assigned_cohort_ids)).scalar() or 0, 2),
+                "attendance_rate": round(float(avg_attendance), 2),
+                "completion_rate": round(float(avg_completion), 2),
                 "average_quiz_score": 0,
                 "target_attendance": 80.0,
-                "target_completion": 90.0,
-                "target_quiz_score": 75.0
-            },
-            "system_health": {
-                "database_status": "healthy",
-                "api_response_time": "45ms",
-                "uptime": "99.9%",
-                "storage_usage": "65%"
+                "target_completion": 90.0
             },
             "upcoming_sessions": sessions_data,
             "total_upcoming": len(sessions_data)
         }
     except Exception as e:
         logger.error(f"Presenter dashboard error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to fetch dashboard data")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch dashboard data: {str(e)}")
 
-@router.get("/presenter/recent-activity")
+@router.get("/github-stats")
+async def get_presenter_github_stats(
+    current_presenter: Presenter = Depends(get_current_presenter),
+    db: Session = Depends(get_db)
+):
+    """Get GitHub link submission statistics for students in presenter's cohorts"""
+    try:
+        # Get cohorts assigned to this presenter
+        presenter_cohorts = db.query(PresenterCohort).filter(
+            PresenterCohort.presenter_id == current_presenter.id
+        ).all()
+        assigned_cohort_ids = [pc.cohort_id for pc in presenter_cohorts]
+        
+        if not assigned_cohort_ids:
+            return {"total_students": 0, "students_with_github": 0, "percentage": 0}
+
+        from sqlalchemy import or_
+        # Filter students by assigned cohorts (checking both mapping table and direct field)
+        student_query = db.query(User).outerjoin(UserCohort, User.id == UserCohort.user_id).filter(
+            or_(
+                UserCohort.cohort_id.in_(assigned_cohort_ids),
+                User.cohort_id.in_(assigned_cohort_ids)
+            ),
+            User.role == "Student"
+        )
+        
+        total_students = student_query.count()
+        
+        # Count students with GitHub links
+        students_with_github = student_query.filter(
+            User.github_link.isnot(None),
+            User.github_link != ""
+        ).count()
+        
+        # Calculate percentage
+        percentage = round((students_with_github / total_students * 100), 1) if total_students > 0 else 0
+        
+        return {
+            "total_students": total_students,
+            "students_with_github": students_with_github,
+            "percentage": percentage
+        }
+    except Exception as e:
+        logger.error(f"Presenter GitHub stats error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch GitHub statistics")
+
+@router.get("/recent-activity")
 async def get_presenter_recent_activity(
     current_presenter: Presenter = Depends(get_current_presenter),
     db: Session = Depends(get_db)
@@ -218,7 +281,7 @@ async def get_presenter_recent_activity(
         # Recent cohort course creations by this presenter
         recent_cohort_courses = db.query(CohortSpecificCourse).filter(
             CohortSpecificCourse.created_by == current_presenter.id,
-            CohortSpecificCourse.created_at >= datetime.now() - func.interval('30 days')
+            CohortSpecificCourse.created_at >= datetime.now() - timedelta(days=30)
         ).order_by(CohortSpecificCourse.created_at.desc()).limit(3).all()
         
         for course in recent_cohort_courses:
@@ -237,7 +300,7 @@ async def get_presenter_recent_activity(
                 User, QuizAttempt.student_id == User.id
             ).filter(
                 User.cohort_id.in_(assigned_cohort_ids),
-                QuizAttempt.submitted_at >= datetime.now() - func.interval('7 days')
+                QuizAttempt.submitted_at >= datetime.now() - timedelta(days=7)
             ).order_by(QuizAttempt.submitted_at.desc()).limit(5).all()
             
             for attempt in recent_quiz_attempts:
@@ -258,7 +321,7 @@ async def get_presenter_recent_activity(
                 User, AssignmentSubmission.student_id == User.id
             ).filter(
                 User.cohort_id.in_(assigned_cohort_ids),
-                AssignmentSubmission.submitted_at >= datetime.now() - func.interval('7 days')
+                AssignmentSubmission.submitted_at >= datetime.now() - timedelta(days=7)
             ).order_by(AssignmentSubmission.submitted_at.desc()).limit(5).all()
             
             for submission in recent_assignments:
@@ -278,7 +341,7 @@ async def get_presenter_recent_activity(
             recent_students = db.query(User).filter(
                 User.role == "Student",
                 User.cohort_id.in_(assigned_cohort_ids),
-                User.created_at >= datetime.now() - func.interval('30 days')
+                User.created_at >= datetime.now() - timedelta(days=30)
             ).order_by(User.created_at.desc()).limit(3).all()
             
             for student in recent_students:

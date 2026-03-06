@@ -47,7 +47,10 @@ async def serve_resource(filename: str, request: Request, db: Session = Depends(
             "Content-Disposition": "inline; filename=\"" + filename + "\"",
             "Cache-Control": "public, max-age=3600",
             "X-Content-Type-Options": "nosniff",
-            "Accept-Ranges": "bytes"
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
         
         # Set proper MIME types for browser viewing
@@ -131,7 +134,10 @@ async def view_resource_authenticated(
         headers = {
             "Content-Disposition": "inline; filename=\"" + filename + "\"",
             "Cache-Control": "public, max-age=3600",
-            "Accept-Ranges": "bytes"
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
         
         if file_ext == ".pdf":
@@ -167,7 +173,10 @@ async def serve_recording(filename: str):
         headers = {
             "Content-Disposition": "inline; filename=\"" + filename + "\"",
             "Cache-Control": "public, max-age=3600",
-            "Accept-Ranges": "bytes"
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
         
         if file_ext in [".mp4"]:
@@ -195,7 +204,10 @@ async def serve_certificate(filename: str):
     if file_path.exists():
         headers = {
             "Content-Disposition": "inline; filename=\"" + filename + "\"",
-            "Cache-Control": "public, max-age=3600"
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
         
         file_ext = os.path.splitext(filename)[1].lower()
@@ -220,7 +232,10 @@ async def serve_course_banner(filename: str):
         
         headers = {
             "Content-Disposition": "inline; filename=\"" + filename + "\"",
-            "Cache-Control": "public, max-age=86400" # 24 hours
+            "Cache-Control": "public, max-age=86400", # 24 hours
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
         }
         
         if file_ext in [".jpg", ".jpeg"]:
@@ -236,3 +251,34 @@ async def serve_course_banner(filename: str):
             
         return FileResponse(file_path, media_type=media_type, headers=headers)
     raise HTTPException(status_code=404, detail="Banner not found")
+
+@router.get("/badge-icons/{filename}")
+async def serve_badge_icon(filename: str):
+    """Serve uploaded badge icon images"""
+    file_path = UPLOAD_BASE_DIR / "badge_icons" / filename
+    if file_path.exists():
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        headers = {
+            "Content-Disposition": "inline; filename=\"" + filename + "\"",
+            "Cache-Control": "public, max-age=86400", # 24 hours
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*"
+        }
+        
+        if file_ext in [".jpg", ".jpeg"]:
+            media_type = "image/jpeg"
+        elif file_ext == ".png":
+            media_type = "image/png"
+        elif file_ext == ".gif":
+            media_type = "image/gif"
+        elif file_ext == ".webp":
+            media_type = "image/webp"
+        elif file_ext == ".svg":
+            media_type = "image/svg+xml"
+        else:
+            media_type = "image/jpeg"
+            
+        return FileResponse(file_path, media_type=media_type, headers=headers)
+    raise HTTPException(status_code=404, detail="Badge icon not found")
