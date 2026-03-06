@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import io
 import pandas as pd
-from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course
+from database import get_db, User, Cohort, Enrollment, Attendance, Session as SessionModel, Module, Course, AdminLog
 from assignment_quiz_models import Assignment, AssignmentSubmission, AssignmentGrade, Quiz, QuizAttempt, QuizResult
 from auth import get_current_user_any_role
 import logging
