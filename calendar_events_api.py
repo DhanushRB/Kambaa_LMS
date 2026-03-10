@@ -171,18 +171,25 @@ async def get_comprehensive_calendar(
         
         # Get enrolled courses for students
         enrolled_course_ids = set()
+        cohort_specific_course_ids = set()
+        
         if user_role == "Student":
-            # 1. Direct Enrollments
+            # 1. Direct Enrollments (Global Courses)
             enrollments = db.query(Enrollment.course_id).filter(Enrollment.student_id == user_id).all()
             enrolled_course_ids.update(e.course_id for e in enrollments)
             
-            # 2. Cohort-based course assignments
+            # 2. Cohort-based global course assignments
             user_cohort_id = getattr(current_user_any, "cohort_id", current_user_any.get("cohort_id"))
             if user_cohort_id:
                 cohort_courses = db.query(CohortCourse.course_id).filter(CohortCourse.cohort_id == user_cohort_id).all()
                 enrolled_course_ids.update(cc.course_id for cc in cohort_courses)
             
-            # 3. CourseAssignment linkages
+            # 3. CohortSpecificEnrollments (Cohort-Specific Courses)
+            from cohort_specific_models import CohortSpecificEnrollment, CohortSpecificCourse, CohortCourseModule, CohortCourseSession
+            cohort_enrollments = db.query(CohortSpecificEnrollment.course_id).filter(CohortSpecificEnrollment.student_id == user_id).all()
+            cohort_specific_course_ids.update(ce.course_id for ce in cohort_enrollments)
+            
+            # 4. CourseAssignment linkages
             try:
                 from database import CourseAssignment
                 from sqlalchemy import or_, and_
@@ -206,8 +213,10 @@ async def get_comprehensive_calendar(
                 logger.error(f"Error fetching CourseAssignment course IDs: {e}")
             
             enrolled_course_ids = list(enrolled_course_ids)
+            cohort_specific_course_ids = list(cohort_specific_course_ids)
         else:
             enrolled_course_ids = []
+            cohort_specific_course_ids = []
         
         # Get calendar events
         event_query = db.query(CalendarEvent).filter(
@@ -242,7 +251,7 @@ async def get_comprehensive_calendar(
                 "color": "#3498db"  # Blue for events
             })
         
-        # Get sessions
+        # Get sessions (Global)
         session_query = db.query(SessionModel).join(Module)
         if user_role == "Student":
             session_query = session_query.filter(Module.course_id.in_(enrolled_course_ids))
@@ -269,6 +278,36 @@ async def get_comprehensive_calendar(
                 "module_title": session.module.title if session.module else None,
                 "zoom_link": session.zoom_link,
                 "color": "#e74c3c"  # Red for sessions
+            })
+
+        # Get sessions (Cohort-Specific)
+        from cohort_specific_models import CohortCourseSession, CohortCourseModule, CohortSpecificCourse
+        cohort_session_query = db.query(CohortCourseSession).join(CohortCourseModule)
+        if user_role == "Student":
+            cohort_session_query = cohort_session_query.filter(CohortCourseModule.course_id.in_(cohort_specific_course_ids))
+        
+        cohort_sessions = cohort_session_query.filter(
+            CohortCourseSession.scheduled_time >= start_datetime,
+            CohortCourseSession.scheduled_time <= end_datetime
+        ).all()
+
+        for session in cohort_sessions:
+            end_time = session.scheduled_time + timedelta(minutes=session.duration_minutes or 60)
+            all_items.append({
+                "id": f"cohort_session_{session.id}",
+                "title": f"Session: {session.title} (Cohort)",
+                "description": session.description,
+                "start_datetime": session.scheduled_time,
+                "end_datetime": end_time,
+                "type": "session",
+                "event_type": "session",
+                "location": "Online" if session.zoom_link else session.syllabus_content,
+                "is_all_day": False,
+                "course_id": session.module.course_id if session.module else None,
+                "course_title": session.module.course.title if session.module and session.module.course else None,
+                "module_title": session.module.title if session.module else None,
+                "zoom_link": session.zoom_link,
+                "color": "#e67e22"  # Distinct color for cohort sessions (Deep Orange)
             })
         
         # Get session meetings
@@ -300,14 +339,15 @@ async def get_comprehensive_calendar(
                 "color": "#27ae60"  # Green for meetings
             })
         
-        # Get assignment deadlines
+        # Get assignment deadlines (Global and Cohort)
+        # 1. Global Assignments
         assignment_query = db.query(Assignment, Module.course_id, Course.title).join(
             SessionModel, Assignment.session_id == SessionModel.id
         ).join(
             Module, SessionModel.module_id == Module.id
         ).outerjoin(
             Course, Module.course_id == Course.id
-        )
+        ).filter(Assignment.session_type == "global")
         
         if user_role == "Student":
             assignment_query = assignment_query.filter(Module.course_id.in_(enrolled_course_ids))
@@ -331,17 +371,52 @@ async def get_comprehensive_calendar(
                 "course_id": course_id,
                 "course_title": course_title,
                 "total_marks": assignment.total_marks,
-                "color": "#f39c12"  # Orange for assignments
+                "color": "#f39c12"  # Orange for global assignments
+            })
+
+        # 2. Cohort Assignments
+        cohort_assignment_query = db.query(Assignment, CohortCourseModule.course_id, CohortSpecificCourse.title).join(
+            CohortCourseSession, Assignment.session_id == CohortCourseSession.id
+        ).join(
+            CohortCourseModule, CohortCourseSession.module_id == CohortCourseModule.id
+        ).outerjoin(
+            CohortSpecificCourse, CohortCourseModule.course_id == CohortSpecificCourse.id
+        ).filter(Assignment.session_type == "cohort")
+
+        if user_role == "Student":
+            cohort_assignment_query = cohort_assignment_query.filter(CohortCourseModule.course_id.in_(cohort_specific_course_ids))
+        
+        cohort_assignments = cohort_assignment_query.filter(
+            Assignment.due_date >= start_datetime,
+            Assignment.due_date <= end_datetime
+        ).all()
+
+        for assignment, course_id, course_title in cohort_assignments:
+            all_items.append({
+                "id": f"cohort_assignment_{assignment.id}",
+                "title": f"Assignment Due: {assignment.title} (Cohort)",
+                "description": assignment.description,
+                "start_datetime": assignment.due_date,
+                "end_datetime": assignment.due_date,
+                "type": "assignment",
+                "event_type": "deadline",
+                "location": "Online Submission",
+                "is_all_day": False,
+                "course_id": course_id,
+                "course_title": course_title,
+                "total_marks": assignment.total_marks,
+                "color": "#d35400"  # Darker Orange for cohort assignments
             })
         
-        # Get quiz schedules
+        # Get quiz schedules (Global and Cohort)
+        # 1. Global Quizzes
         quiz_query = db.query(Quiz, Module.course_id, Course.title).join(
             SessionModel, Quiz.session_id == SessionModel.id
         ).join(
             Module, SessionModel.module_id == Module.id
         ).outerjoin(
             Course, Module.course_id == Course.id
-        )
+        ).filter(Quiz.session_type == "global")
         
         if user_role == "Student":
             quiz_query = quiz_query.filter(Module.course_id.in_(enrolled_course_ids))
@@ -368,7 +443,44 @@ async def get_comprehensive_calendar(
                 "session_id": quiz.session_id,
                 "total_marks": quiz.total_marks,
                 "time_limit": quiz.time_limit_minutes,
-                "color": "#9b59b6"  # Purple for quizzes
+                "color": "#9b59b6"  # Purple for global quizzes
+            })
+
+        # 2. Cohort Quizzes
+        cohort_quiz_query = db.query(Quiz, CohortCourseModule.course_id, CohortSpecificCourse.title).join(
+            CohortCourseSession, Quiz.session_id == CohortCourseSession.id
+        ).join(
+            CohortCourseModule, CohortCourseSession.module_id == CohortCourseModule.id
+        ).outerjoin(
+            CohortSpecificCourse, CohortCourseModule.course_id == CohortSpecificCourse.id
+        ).filter(Quiz.session_type == "cohort")
+
+        if user_role == "Student":
+            cohort_quiz_query = cohort_quiz_query.filter(CohortCourseModule.course_id.in_(cohort_specific_course_ids))
+        
+        cohort_quizzes = cohort_quiz_query.filter(
+            Quiz.created_at >= start_datetime,
+            Quiz.created_at <= end_datetime
+        ).all()
+
+        for quiz, course_id, course_title in cohort_quizzes:
+            quiz_end = quiz.created_at + timedelta(minutes=quiz.time_limit_minutes or 60)
+            all_items.append({
+                "id": f"cohort_quiz_{quiz.id}",
+                "title": f"Quiz: {quiz.title} (Cohort)",
+                "description": quiz.description,
+                "start_datetime": quiz.created_at,
+                "end_datetime": quiz_end,
+                "type": "quiz",
+                "event_type": "exam",
+                "location": "Online",
+                "is_all_day": False,
+                "course_id": course_id,
+                "course_title": course_title,
+                "session_id": quiz.session_id,
+                "total_marks": quiz.total_marks,
+                "time_limit": quiz.time_limit_minutes,
+                "color": "#8e44ad"  # Darker Purple for cohort quizzes
             })
         
         # Sort all items by start_datetime

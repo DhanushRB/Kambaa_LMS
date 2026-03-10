@@ -333,11 +333,8 @@ Test performed by: {current_admin.username} ({current_admin.email})
             logger.error(f"SMTP send error: {str(smtp_error)}")
             raise HTTPException(status_code=400, detail=f"Failed to send email: {str(smtp_error)}")
         finally:
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            # removed server.quit() to reuse connection
+            pass
         
         return {
             "message": f"Test email sent successfully to {test_data.test_email}",

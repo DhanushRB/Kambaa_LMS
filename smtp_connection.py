@@ -2,9 +2,135 @@ import smtplib
 import ssl
 import logging
 import socket
+import threading
 from typing import Tuple, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+class SMTPConnectionManager:
+    """
+    Manages persistent SMTP connections to avoid reconnection latency.
+    Implements a singleton-like pattern with configuration tracking.
+    """
+    _connection = None
+    _config_checksum = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def _get_config_checksum(cls, **config) -> str:
+        """Generate a simple checksum of the configuration to detect changes."""
+        config_str = "|".join(f"{k}:{v}" for k, v in sorted(config.items()))
+        import hashlib
+        return hashlib.md5(config_str.encode()).hexdigest()
+
+    @classmethod
+    def is_connected(cls) -> bool:
+        """Check if the current connection is alive using HELP or NOOP."""
+        if cls._connection is None:
+            return False
+        try:
+            # NOOP is the standard way to check if connection is alive
+            status = cls._connection.noop()[0]
+            return status == 250
+        except Exception:
+            return False
+
+    @classmethod
+    def get_connection(
+        cls,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        use_tls: bool = True,
+        use_ssl: bool = False,
+        timeout: int = 30
+    ) -> Tuple[Optional[Any], Optional[str]]:
+        """
+        Gets an existing connection or creates a new one if needed.
+        """
+        config = {
+            'host': host.strip(),
+            'port': port,
+            'username': username,
+            'password': password,
+            'use_tls': use_tls,
+            'use_ssl': use_ssl
+        }
+        new_checksum = cls._get_config_checksum(**config)
+
+        with cls._lock:
+            # If config changed or connection is dead, reset
+            if cls._config_checksum != new_checksum or not cls.is_connected():
+                if cls._connection:
+                    logger.info("SMTP configuration changed or connection lost. Resetting connection.")
+                    try:
+                        cls._connection.quit()
+                    except:
+                        pass
+                    cls._connection = None
+                
+                # Create new connection
+                logger.info(f"Creating new SMTP connection to {host}:{port}")
+                server, error = cls._create_new_connection(**config, timeout=timeout)
+                if error:
+                    return None, error
+                
+                cls._connection = server
+                cls._config_checksum = new_checksum
+            else:
+                logger.debug("Reusing existing SMTP connection")
+
+            return cls._connection, None
+
+    @classmethod
+    def _create_new_connection(
+        cls, host, port, username, password, use_tls, use_ssl, timeout
+    ) -> Tuple[Optional[Any], Optional[str]]:
+        """Low-level connection creation logic (extracted from original get_smtp_connection)"""
+        server = None
+        try:
+            # Create SSL context for security
+            context = ssl.create_default_context()
+            
+            # Determine connection method
+            is_implicit_ssl = use_ssl or (port == 465)
+            
+            if is_implicit_ssl:
+                server = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
+            else:
+                server = smtplib.SMTP(host, port, timeout=timeout)
+                
+                try:
+                    server.ehlo()
+                except Exception:
+                    pass
+                    
+                if use_tls:
+                    if server.has_extn("STARTTLS"):
+                        server.starttls(context=context)
+                        server.ehlo()
+            
+            # Attempt Login
+            server.login(username, password)
+            return server, None
+            
+        except (smtplib.SMTPAuthenticationError, smtplib.SMTPConnectError, smtplib.SMTPException, 
+                socket.timeout, socket.error, ssl.SSLError) as e:
+            error_msg = str(e)
+            if server:
+                try:
+                    server.quit()
+                except:
+                    pass
+            return None, error_msg
+        except Exception as e:
+            if server:
+                try:
+                    server.quit()
+                except:
+                    pass
+            return None, f"Unexpected error: {str(e)}"
 
 def get_smtp_connection(
     host: str,
@@ -16,92 +142,14 @@ def get_smtp_connection(
     timeout: int = 30
 ) -> Tuple[Optional[Any], Optional[str]]:
     """
-    Creates a robust SMTP connection with proper SSL/TLS handling.
-    
-    Args:
-        host: SMTP server hostname
-        port: SMTP server port
-        username: SMTP username
-        password: SMTP password
-        use_tls: Whether to use STARTTLS (typically for port 587)
-        use_ssl: Whether to use implicit SSL (typically for port 465)
-        timeout: Connection timeout in seconds
-        
-    Returns:
-        Tuple of (connection object or None, error message or None)
+    Maintains backward compatibility by wrapping SMTPConnectionManager.
     """
-    server = None
-    try:
-        host = host.strip()
-        
-        # Test DNS resolution
-        try:
-            socket.gethostbyname(host)
-        except socket.gaierror as dns_error:
-            logger.warning(f"DNS resolution warning for '{host}': {str(dns_error)}")
-            # We continue anyway as some systems might resolve it differently during connection
-            
-        # Create SSL context for security
-        context = ssl.create_default_context()
-        
-        # Determine connection method
-        # Port 465 is almost always implicit SSL
-        is_implicit_ssl = use_ssl or (port == 465)
-        
-        if is_implicit_ssl:
-            logger.info(f"Connecting to {host}:{port} via SMTP_SSL")
-            server = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
-        else:
-            logger.info(f"Connecting to {host}:{port} via SMTP")
-            server = smtplib.SMTP(host, port, timeout=timeout)
-            
-            # Use EHLO before STARTTLS if possible
-            try:
-                server.ehlo()
-            except Exception:
-                pass
-                
-            if use_tls:
-                if server.has_extn("STARTTLS"):
-                    logger.info("Starting TLS...")
-                    server.starttls(context=context)
-                    # Re-identify after STARTTLS
-                    server.ehlo()
-                else:
-                    logger.warning("STARTTLS requested but not supported by server")
-        
-        # Set command timeout on the socket
-        if hasattr(server, 'sock') and server.sock:
-            server.sock.settimeout(timeout)
-            
-        # Attempt Login
-        logger.info(f"Attempting login for {username}")
-        server.login(username, password)
-        
-        return server, None
-        
-    except (smtplib.SMTPAuthenticationError, smtplib.SMTPConnectError, smtplib.SMTPException, 
-            socket.timeout, socket.error, ssl.SSLError) as e:
-        error_msg = str(e)
-        logger.error(f"SMTP connection error: {error_msg}")
-        
-        # Clean up if partially connected
-        if server:
-            try:
-                server.quit()
-            except:
-                pass
-                
-        # Handle specific common SSL errors
-        if "WRONG_VERSION_NUMBER" in error_msg:
-            return None, "SSL Protocol Mismatch: The server might not support SSL on this port. Try port 587 with TLS."
-        
-        return None, error_msg
-    except Exception as e:
-        logger.error(f"Unexpected SMTP error: {str(e)}")
-        if server:
-            try:
-                server.quit()
-            except:
-                pass
-        return None, f"Unexpected error: {str(e)}"
+    return SMTPConnectionManager.get_connection(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        use_tls=use_tls,
+        use_ssl=use_ssl,
+        timeout=timeout
+    )

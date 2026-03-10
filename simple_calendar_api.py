@@ -52,41 +52,33 @@ async def get_month_events(
     db: Session = Depends(get_db)
 ):
     try:
+        from calendar_events_api import get_comprehensive_calendar
+        from datetime import date, timedelta
+        
+        # Calculate date range for the month
         start_date = date(year, month, 1)
         if month == 12:
             end_date = date(year + 1, 1, 1) - timedelta(days=1)
         else:
             end_date = date(year, month + 1, 1) - timedelta(days=1)
         
-        start_dt = datetime.combine(start_date, datetime.min.time())
-        end_dt = datetime.combine(end_date, datetime.max.time())
-        
-        events = db.query(CalendarEvent).filter(
-            CalendarEvent.start_datetime >= start_dt,
-            CalendarEvent.start_datetime <= end_dt
-        ).all()
-        
-        calendar_items = []
-        for event in events:
-            calendar_items.append({
-                "id": f"event_{event.id}",
-                "title": event.title,
-                "description": event.description,
-                "start_datetime": event.start_datetime,
-                "end_datetime": event.end_datetime,
-                "type": "event",
-                "event_type": event.event_type,
-                "location": event.location,
-                "color": "#007bff"
-            })
+        # Use the comprehensive calendar logic
+        result = await get_comprehensive_calendar(
+            start_date=start_date,
+            end_date=end_date,
+            current_user_any=current_user,
+            db=db
+        )
         
         return {
             "year": year,
             "month": month,
-            "calendar_items": calendar_items,
-            "total_items": len(calendar_items)
+            "calendar_items": result["calendar_items"],
+            "total_items": result["total_items"]
         }
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error in simple_calendar_api: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/student/calendar/month/{year}/{month}")

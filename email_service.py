@@ -149,12 +149,7 @@ class EmailService:
             except Exception as smtp_error:
                 logger.error(f"SMTP send error: {str(smtp_error)}")
                 return False
-            finally:
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
+            # removed server.quit() to reuse connection
             
         except Exception as e:
             logger.error(f"Failed to send email: {str(e)}")

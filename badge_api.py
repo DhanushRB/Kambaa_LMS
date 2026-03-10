@@ -258,6 +258,16 @@ def get_user_badges(
         
     return results
 
+@router.get("/available")
+def get_available_badges(
+    db: Session = Depends(get_db), 
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns badges the student hasn't earned yet, along with eligibility details.
+    """
+    return BadgeService.get_available_badges_for_student(db, current_user.id)
+
 @router.get("/audit-logs/{config_id}")
 def get_badge_audit_logs(
     config_id: int,

@@ -297,3 +297,84 @@ class BadgeService:
             
         db.commit()
         return {"issued_count": issued_count}
+    @staticmethod
+    def get_available_badges_for_student(db: Session, student_id: int) -> List[Dict[str, Any]]:
+        """
+        Returns a list of badges available to the student that they haven't earned yet,
+        along with their current progress/eligibility status.
+        """
+        student = db.query(User).filter(User.id == student_id).first()
+        if not student:
+            return []
+            
+        # 1. Identify potential badge configurations
+        # - Global badges
+        # - Badges for their cohort
+        # - Badges for courses they are enrolled in
+        configs = db.query(BadgeConfiguration).filter(BadgeConfiguration.is_active == True)
+        
+        # Filter configurations relevant to this student
+        relevant_configs = []
+        all_active_configs = configs.all()
+        
+        # Get student's enrolled course IDs
+        enrolled_course_ids = [e.course_id for e in student.enrollments]
+        
+        for config in all_active_configs:
+            is_relevant = False
+            
+            # Global (no cohort, no course) - everyone
+            if not config.cohort_id and not config.course_id and not config.cohort_specific_course_id:
+                is_relevant = True
+            # Cohort specific
+            elif config.cohort_id == student.cohort_id:
+                is_relevant = True
+            # Course specific (Global Course)
+            elif config.course_id in enrolled_course_ids:
+                is_relevant = True
+            # Cohort Specific Course
+            elif config.cohort_specific_course_id:
+                csc = db.query(CohortSpecificCourse).filter(CohortSpecificCourse.id == config.cohort_specific_course_id).first()
+                if csc and csc.cohort_id == student.cohort_id:
+                    is_relevant = True
+                    
+            if is_relevant:
+                relevant_configs.append(config)
+                
+        # 2. Filter out already earned badges
+        earned_badge_ids = [b.badge_config_id for b in db.query(AwardedBadge).filter(AwardedBadge.user_id == student_id).all()]
+        unearned_configs = [c for c in relevant_configs if c.id not in earned_badge_ids]
+        
+        # 3. Evaluate progress for each unearned badge
+        results = []
+        for config in unearned_configs:
+            performance = BadgeService.get_student_performance(db, student_id, config)
+            if not performance:
+                continue
+                
+            is_eligible, details = BadgeService.evaluate_eligibility(performance, config)
+            
+            # Enrich config info
+            course_title = None
+            if config.cohort_specific_course_id:
+                course = db.query(CohortSpecificCourse).filter(CohortSpecificCourse.id == config.cohort_specific_course_id).first()
+                course_title = course.title if course else None
+            elif config.course_id:
+                course = db.query(Course).filter(Course.id == config.course_id).first()
+                course_title = course.title if course else None
+                
+            results.append({
+                "id": config.id,
+                "title": config.title,
+                "description": config.description,
+                "icon_url": config.icon_url,
+                "week_start": config.week_start,
+                "week_end": config.week_end,
+                "course_title": course_title,
+                "is_eligible": is_eligible,
+                "performance": performance,
+                "criteria_results": details,
+                "requirements": config.criteria
+            })
+            
+        return results

@@ -171,12 +171,7 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"SMTP send error for {to_email}: {str(e)}")
                 return "failed", str(e)
-            finally:
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
+            # removed server.quit() to reuse connection
                     
             logger.info("Email sent to %s (user_id=%s)", to_email, user_id)
             return "sent", None

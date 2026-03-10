@@ -250,12 +250,7 @@ class EmailService:
             except Exception as e:
                 logger.error(f"Email dispatch error for {to_email}: {str(e)}")
                 return "failed", str(e)
-            finally:
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
+            # removed server.quit() to reuse connection
             
             logger.info(f"Email sent successfully to {to_email}")
             return "sent", None
