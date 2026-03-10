@@ -16,14 +16,9 @@ from email_templates import (
     get_certificate_template
 )
 
-logger = logging.getLogger(__name__)
+from smtp_cache import smtp_cache
 
-# SMTP Configuration
-EMAIL_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-EMAIL_PORT = int(os.getenv("SMTP_PORT", "587"))
-EMAIL_USERNAME = os.getenv("SMTP_USERNAME")
-EMAIL_PASSWORD = os.getenv("SMTP_PASSWORD")
-EMAIL_FROM = os.getenv("SMTP_FROM") or EMAIL_USERNAME
+logger = logging.getLogger(__name__)
 
 class EmailService:
     """Enhanced email service with template support"""
@@ -215,14 +210,16 @@ class EmailService:
     
     def _dispatch_email(self, user_id: int, to_email: str, subject: str, html_content: str):
         """Actually send the email"""
-        if not all([EMAIL_HOST, EMAIL_USERNAME, EMAIL_PASSWORD, EMAIL_FROM]):
-            logger.error("SMTP configuration missing")
-            return "failed", "SMTP configuration missing"
+        # Get cached SMTP config
+        smtp_config = smtp_cache.get_smtp_config()
+        if not smtp_config:
+            logger.error("No active SMTP configuration found in database")
+            return "failed", "SMTP configuration missing in database"
         
         try:
             # Create message
             msg = MIMEMultipart('alternative')
-            msg['From'] = EMAIL_FROM
+            msg['From'] = f"{smtp_config['smtp_from_name']} <{smtp_config['smtp_from_email']}>"
             msg['To'] = to_email
             msg['Subject'] = subject
             
@@ -232,12 +229,12 @@ class EmailService:
             
             # Use robust connection utility
             server, error = get_smtp_connection(
-                host=EMAIL_HOST,
-                port=EMAIL_PORT,
-                username=EMAIL_USERNAME,
-                password=EMAIL_PASSWORD,
-                use_tls=True, # Default to True for port 587
-                use_ssl=False,
+                host=smtp_config['smtp_host'],
+                port=smtp_config['smtp_port'],
+                username=smtp_config['smtp_username'],
+                password=smtp_config['smtp_password'],
+                use_tls=smtp_config['use_tls'],
+                use_ssl=smtp_config['use_ssl'],
                 timeout=30
             )
             
@@ -278,15 +275,20 @@ class EmailService:
             return None
     
     def test_smtp_connection(self):
-        """Test SMTP connection"""
+        """Test SMTP connection using database configuration"""
         try:
+            # Get cached SMTP config
+            smtp_config = smtp_cache.get_smtp_config()
+            if not smtp_config:
+                return False, "No active SMTP configuration found in database"
+                
             server, error = get_smtp_connection(
-                host=EMAIL_HOST,
-                port=EMAIL_PORT,
-                username=EMAIL_USERNAME,
-                password=EMAIL_PASSWORD,
-                use_tls=True,
-                use_ssl=False,
+                host=smtp_config['smtp_host'],
+                port=smtp_config['smtp_port'],
+                username=smtp_config['smtp_username'],
+                password=smtp_config['smtp_password'],
+                use_tls=smtp_config['use_tls'],
+                use_ssl=smtp_config['use_ssl'],
                 timeout=30
             )
             if error:

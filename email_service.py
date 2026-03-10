@@ -15,6 +15,7 @@ from jinja2 import Template
 
 from database import SessionLocal
 from smtp_models import SMTPConfig
+from smtp_cache import smtp_cache
 from smtp_connection import get_smtp_connection
 
 logger = logging.getLogger(__name__)
@@ -32,25 +33,12 @@ class EmailService:
         self._load_smtp_config()
     
     def _load_smtp_config(self):
-        """Load active SMTP configuration from database"""
-        try:
-            # Always get fresh config from database
-            self.smtp_config = self.db.query(SMTPConfig).filter(SMTPConfig.is_active == True).first()
-            if self.smtp_config:
-                logger.info(f"SMTP configuration loaded: {self.smtp_config.smtp_host}:{self.smtp_config.smtp_port}")
-            else:
-                logger.warning("No active SMTP configuration found in database")
-        except Exception as e:
-            logger.error(f"Failed to load SMTP config: {str(e)}")
-            self.smtp_config = None
+        """Load active SMTP configuration from cache"""
+        self.smtp_config = smtp_cache.get_smtp_config()
     
     def _refresh_config(self):
-        """Refresh SMTP configuration from database"""
+        """Refresh SMTP configuration from cache"""
         self._load_smtp_config()
-    
-    def _decrypt_password(self, encrypted_password: str) -> str:
-        """Decrypt SMTP password"""
-        return cipher_suite.decrypt(encrypted_password.encode()).decode()
     
     def is_configured(self) -> bool:
         """Check if SMTP is properly configured"""
@@ -89,12 +77,12 @@ class EmailService:
             return False
         
         try:
-            # Decrypt password
-            password = self._decrypt_password(self.smtp_config.smtp_password)
+            # Config is already decrypted and prepared in the cache
+            config = self.smtp_config
             
             # Create message
             msg = MIMEMultipart('alternative')
-            msg['From'] = f"{self.smtp_config.smtp_from_name} <{self.smtp_config.smtp_from_email}>"
+            msg['From'] = f"{config['smtp_from_name']} <{config['smtp_from_email']}>"
             msg['To'] = ', '.join(to_emails)
             msg['Subject'] = subject
             
@@ -129,12 +117,12 @@ class EmailService:
             
             # Use robust connection utility
             server, error = get_smtp_connection(
-                host=self.smtp_config.smtp_host,
-                port=self.smtp_config.smtp_port,
-                username=self.smtp_config.smtp_username,
-                password=password,
-                use_tls=self.smtp_config.use_tls,
-                use_ssl=self.smtp_config.use_ssl,
+                host=config['smtp_host'],
+                port=config['smtp_port'],
+                username=config['smtp_username'],
+                password=config['smtp_password'],
+                use_tls=config['use_tls'],
+                use_ssl=config['use_ssl'],
                 timeout=30
             )
             
@@ -144,7 +132,7 @@ class EmailService:
                 
             try:
                 server.send_message(msg, to_addrs=all_recipients)
-                logger.info(f"Email sent successfully to {len(all_recipients)} recipients using SMTP: {self.smtp_config.smtp_host}:{self.smtp_config.smtp_port}")
+                logger.info(f"Email sent successfully to {len(all_recipients)} recipients using SMTP: {config['smtp_host']}:{config['smtp_port']}")
                 return True
             except Exception as smtp_error:
                 logger.error(f"SMTP send error: {str(smtp_error)}")

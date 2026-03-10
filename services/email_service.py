@@ -66,11 +66,8 @@ class EmailService:
                 print(f"Email send failed for {to_email}: {str(e)}")
                 return False
             finally:
-                if server:
-                    try:
-                        server.quit()
-                    except:
-                        pass
+                # removed server.quit() to reuse connection
+                pass
             
             print(f"Email sent successfully to {to_email}")
             return True
