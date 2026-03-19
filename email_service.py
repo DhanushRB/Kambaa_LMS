@@ -316,6 +316,43 @@ class EmailService:
                 Best regards,
                 Kambaa AI LMS Team
                 '''
+            },
+            'badge_achievement': {
+                'subject': 'Congratulations! You\'ve earned the {{ badge_title }} Badge',
+                'html': '''
+                <html>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <div style="max-width: 600px; margin: 0 auto; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                        <div style="background: #1e40af; color: white; padding: 20px; text-align: center;">
+                            <h2 style="margin: 0;">Badge Achievement!</h2>
+                        </div>
+                        <div style="padding: 30px; background: #ffffff;">
+                            <p><span style="color: #10b981; font-weight: bold; font-size: 18px;">Congratulations!</span></p>
+                            <p>Hello <strong>{{ username }}</strong>,</p>
+                            <p>Great job! You have satisfied the performance criteria and have been awarded the <strong>{{ badge_title }}</strong> badge.</p>
+                            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1e40af; text-align: center;">
+                                <img src="{{ icon_url }}" alt="Badge Icon" style="width: 80px; height: 80px; margin-bottom: 10px;"><br>
+                                <strong style="font-size: 20px; color: #1e40af;">{{ badge_title }}</strong>
+                            </div>
+                            <p>Keep up the excellent work! Your achievement is now visible on your profile.</p>
+                            <p>Best regards,<br>Kambaa AI LMS Team</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                ''',
+                'text': '''
+                Congratulations!
+                
+                Hello {{ username }},
+                
+                Great job! You have satisfied the performance criteria and have been awarded the {{ badge_title }} badge.
+                
+                Keep up the excellent work! Your achievement is now visible on your profile.
+                
+                Best regards,
+                Kambaa AI LMS Team
+                '''
             }
         }
         
@@ -493,7 +530,8 @@ def send_notification_email(
         'info': '#3b82f6',
         'success': '#10b981',
         'warning': '#f59e0b',
-        'error': '#ef4444'
+        'error': '#ef4444',
+        'badge_award': '#1e40af'
     }
     
     color = colors.get(notification_type, '#3b82f6')
@@ -508,9 +546,9 @@ def send_notification_email(
             <div style="background: #f8fafc; padding: 20px; border-radius: 0 0 5px 5px; border: 1px solid #e5e7eb;">
                 <p>{message}</p>
             </div>
-            <p style="margin-top: 20px; font-size: 12px; color: #64748b;">
-                This email was sent from Kambaa AI LMS
-            </p>
+            # <p style="margin-top: 20px; font-size: 12px; color: #64748b;">
+            #     This email was sent from Kambaa AI LMS
+            # </p>
         </div>
     </body>
     </html>

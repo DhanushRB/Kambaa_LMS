@@ -8,7 +8,7 @@ from badge_models import BadgeConfiguration, AwardedBadge, BadgeAuditLog
 from database import User, Attendance, Session as SessionModel, StudentSessionStatus, Enrollment, Module
 from assignment_quiz_models import Assignment, AssignmentSubmission, AssignmentGrade
 from cohort_specific_models import CohortCourseSession, CohortCourseModule, CohortAttendance, CohortSpecificCourse
-from email_service import send_notification_email
+from email_service import send_notification_email, email_service
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,6 @@ class BadgeService:
         mapping = {
             "min_attendance": ("attendance", performance.get("attendance", 0)),
             "min_assignments_completed": ("submitted_count", performance.get("submitted_count", 0)),
-            "require_assignment_submission": ("assignment_submission_status", performance.get("assignment_submission_status", False)),
             "min_progress": ("progress", performance.get("progress", 0))
         }
         
@@ -167,13 +166,6 @@ class BadgeService:
         elif prog_is_mandatory:
             if not results.get("min_progress", {}).get("pass", False):
                 is_eligible = False
-                
-        # 3. Check any other mandatory rules (e.g., standard assignment submission requirement)
-        for rule in mandatory:
-            if rule in ["min_attendance", "min_progress", "min_assignments_completed"]:
-                continue
-            if not results.get(rule, {}).get("pass", True):
-                is_eligible = False
                     
         return is_eligible, results
 
@@ -202,11 +194,19 @@ class BadgeService:
            
         students = query.all()
         
+        # Get already issued badges for this config
+        issued_user_ids = {
+            b.user_id for b in db.query(AwardedBadge.user_id).filter(
+                AwardedBadge.badge_config_id == config.id
+            ).all()
+        }
+        
         summary = {
             "badge_config_id": config.id,
             "total_evaluated": 0,
-            "eligible_count": 0,
-            "evaluations": []
+            "eligible_now": [],
+            "already_issued": [],
+            "rejected": []
         }
         
         for student in students:
@@ -216,6 +216,28 @@ class BadgeService:
                 
             is_eligible, details = BadgeService.evaluate_eligibility(performance, config)
             
+            # Categorize the student
+            student_data = {
+                "userId": student.id,
+                "name": f"{student.first_name} {student.last_name}" if hasattr(student, 'first_name') else student.username,
+                "username": student.username,
+                "email": student.email,
+                "attendance_percentage": performance.get("attendance", 0),
+                "submitted_count": performance.get("submitted_count", 0),
+                "total_assignments": performance.get("total_assignments", 0),
+                "is_eligible": is_eligible,
+                "details": details
+            }
+            
+            if student.id in issued_user_ids:
+                summary["already_issued"].append(student_data)
+            elif is_eligible:
+                summary["eligible_now"].append(student_data)
+            else:
+                summary["rejected"].append(student_data)
+                
+            summary["total_evaluated"] += 1
+
             # Log/Update audit
             existing_audit = db.query(BadgeAuditLog).filter(
                 BadgeAuditLog.user_id == student.id,
@@ -235,19 +257,6 @@ class BadgeService:
                     remarks="Automated evaluation"
                 )
                 db.add(audit)
-            
-            summary["total_evaluated"] += 1
-            evaluation_item = {
-                "student_id": student.id,
-                "username": student.username,
-                "email": student.email,
-                "performance": performance,
-                "is_eligible": is_eligible,
-                "details": details
-            }
-            summary["evaluations"].append(evaluation_item)
-            if is_eligible:
-                summary["eligible_count"] += 1
         
         db.commit()
         return summary
@@ -289,9 +298,38 @@ class BadgeService:
             # Send Email
             user = db.query(User).filter(User.id == user_id).first()
             if user:
+                from database import EmailTemplate
+                # Try to get the template from database first (for UI-edited content)
+                template = db.query(EmailTemplate).filter(
+                    EmailTemplate.name == "Badge Achievement",
+                    EmailTemplate.is_active == True
+                ).first()
+                
                 subject = f"Congratulations! You've earned the '{config.title}' Badge"
-                message = f"Hello {user.username},\n\nGreat job! You have satisfied the performance criteria for your recent sessions and have been awarded the '{config.title}' badge.\n\nKeep up the excellent work!\n\nBest regards,\nLMS Team"
-                send_notification_email([user.email], subject, message, "success")
+                if template:
+                    # Use template from database
+                    subject = template.subject.replace("{badge_title}", config.title).replace("{username}", user.username)
+                    body_content = template.body.replace("{badge_title}", config.title).replace("{username}", user.username)
+                    
+                    # Wrap in base layout and send
+                    from email_styling import wrap_in_base_layout
+                    html_message = wrap_in_base_layout(body_content, subject)
+                    
+                    # Import send_email or use email_service.send_email
+                    from email_service import send_notification_email
+                    send_notification_email([user.email], subject, html_message, "badge_award")
+                else:
+                    # Fallback to hardcoded template in EmailService
+                    email_service.send_template_email(
+                        to_emails=[user.email],
+                        template_name='badge_achievement',
+                        template_data={
+                            'username': user.username,
+                            'badge_title': config.title,
+                            'icon_url': config.icon_url or 'https://cdn-icons-png.flaticon.com/512/190/190411.png'
+                        },
+                        subject=subject
+                    )
             
             issued_count += 1
             

@@ -168,45 +168,39 @@ def export_badge_evaluation(
         
     evaluations = results.get("evaluations", [])
     
-    # Filter based on status
-    target_status = status.lower() == "eligible"
-    data_to_export = [e for e in evaluations if e["is_eligible"] == target_status]
+    # Map status to target list
+    target_key = "eligible_now"
+    if status.lower() == "issued":
+        target_key = "already_issued"
+    elif status.lower() == "rejected":
+        target_key = "rejected"
+        
+    data_to_export = results.get(target_key, [])
     
     # Create CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
     
-    if target_status:
-        # Header for Eligible
-        writer.writerow(["Student Name", "Email", "Attendance %", "Avg Assignment Score %", "Progress %"])
+    if target_key in ["eligible_now", "already_issued"]:
+        # Header for Success categories
+        writer.writerow(["Student Name", "Email", "Attendance %", "Assignments Completed"])
         # Data
         for item in data_to_export:
-            perf = item.get("performance", {})
             writer.writerow([
-                item.get("username"),
+                item.get("name") or item.get("username"),
                 item.get("email"),
-                f"{perf.get('attendance', 0):.1f}%",
-                f"{perf.get('avg_score', 0):.1f}%",
-                f"{perf.get('progress', 0):.1f}%"
+                f"{item.get('attendance_percentage', 0):.1f}%",
+                f"{item.get('submitted_count', 0)} / {item.get('total_assignments', 0)}"
             ])
     else:
         # Header for Rejected
-        writer.writerow(["Student Name", "Email", "Reason for Rejection"])
+        writer.writerow(["Student Name", "Email", "Status"])
         # Data
         for item in data_to_export:
-            # Reconstruct rejection reasons from details if needed, or use a simple summary
-            details = item.get("details", {})
-            reasons = []
-            for rule, res in details.items():
-                if not res.get("pass"):
-                    req = res.get("required")
-                    act = res.get("actual")
-                    reasons.append(f"{rule.replace('min_', '').replace('_', ' ')}: {act} (req: {req})")
-            
             writer.writerow([
-                item.get("username"),
+                item.get("name") or item.get("username"),
                 item.get("email"),
-                ", ".join(reasons) if reasons else "Threshold not met"
+                "Pending"
             ])
     
     output.seek(0)

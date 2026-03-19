@@ -55,6 +55,7 @@ class AssignmentCreate(BaseModel):
     due_date: datetime
     total_marks: int = Field(default=100, ge=1, le=1000)
     evaluation_criteria: Optional[str] = None
+    drive_link: Optional[str] = None
 
 class AssignmentUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -65,6 +66,7 @@ class AssignmentUpdate(BaseModel):
     due_date: Optional[datetime] = None
     total_marks: Optional[int] = Field(None, ge=1, le=1000)
     evaluation_criteria: Optional[str] = None
+    drive_link: Optional[str] = None
 
 class QuizCreate(BaseModel):
     session_id: int
@@ -281,6 +283,7 @@ async def create_assignment(
             due_date=assignment_data.due_date,
             total_marks=assignment_data.total_marks,
             evaluation_criteria=assignment_data.evaluation_criteria,
+            drive_link=assignment_data.drive_link,
             created_by=creator_id,
             created_by_type=creator_type
         )
@@ -314,6 +317,7 @@ async def create_assignment(
                 "total_marks": assignment.total_marks,
                 "submission_type": assignment.submission_type.value,
                 "session_type": assignment.session_type,
+                "drive_link": assignment.drive_link,
                 "has_file": False
             }
         }
@@ -334,6 +338,7 @@ async def create_assignment_with_file(
     due_date: str = Form(...),
     total_marks: int = Form(100),
     evaluation_criteria: str = Form(None),
+    drive_link: str = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -388,6 +393,7 @@ async def create_assignment_with_file(
             due_date=due_date_parsed,
             total_marks=total_marks,
             evaluation_criteria=evaluation_criteria,
+            drive_link=drive_link,
             created_by=1,  # Default admin
             created_by_type="admin"
         )
@@ -421,6 +427,7 @@ async def create_assignment_with_file(
                 "total_marks": assignment.total_marks,
                 "submission_type": assignment.submission_type.value,
                 "session_type": assignment.session_type,
+                "drive_link": assignment.drive_link,
                 "has_file": file_path is not None
             }
         }
@@ -441,6 +448,7 @@ async def update_assignment(
     due_date: str = Form(...),
     total_marks: int = Form(100),
     evaluation_criteria: str = Form(None),
+    drive_link: str = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -486,6 +494,7 @@ async def update_assignment(
         assignment.due_date = due_date_parsed
         assignment.total_marks = total_marks
         assignment.evaluation_criteria = evaluation_criteria
+        assignment.drive_link = drive_link
 
         db.commit()
         db.refresh(assignment)
@@ -500,6 +509,7 @@ async def update_assignment(
                 "due_date": assignment.due_date,
                 "total_marks": assignment.total_marks,
                 "submission_type": assignment.submission_type.value,
+                "drive_link": assignment.drive_link,
                 "has_file": assignment.file_path is not None
             }
         }
@@ -539,6 +549,7 @@ async def get_session_assignments(
                 "due_date": assignment.due_date,
                 "total_marks": assignment.total_marks,
                 "evaluation_criteria": assignment.evaluation_criteria,
+                "drive_link": assignment.drive_link,
                 "has_file": assignment.file_path is not None,
                 "submission_count": submission_count,
                 "created_at": assignment.created_at
@@ -553,6 +564,7 @@ async def get_session_assignments(
 async def submit_assignment(
     assignment_id: int,
     submission_text: Optional[str] = Form(None),
+    submission_link: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -603,10 +615,13 @@ async def submit_assignment(
             raise HTTPException(status_code=400, detail="File submission required")
         elif assignment.submission_type == SubmissionType.TEXT and not submission_text and not (existing_submission and existing_submission.submission_text):
             raise HTTPException(status_code=400, detail="Text submission required")
+        elif assignment.submission_type == SubmissionType.LINK and not submission_link and not (existing_submission and existing_submission.submission_link):
+            raise HTTPException(status_code=400, detail="Link submission required")
 
         if existing_submission:
             # Update existing submission
             existing_submission.submission_text = submission_text if submission_text else existing_submission.submission_text
+            existing_submission.submission_link = submission_link if submission_link else existing_submission.submission_link
             existing_submission.file_path = file_path
             existing_submission.file_name = file_name
             existing_submission.file_size = file_size
@@ -619,6 +634,7 @@ async def submit_assignment(
                 assignment_id=assignment_id,
                 student_id=current_user.id,
                 submission_text=submission_text,
+                submission_link=submission_link,
                 file_path=file_path,
                 file_name=file_name,
                 file_size=file_size,
@@ -687,6 +703,7 @@ async def get_assignment_submissions(
                 "student_name": student.username if student else "Unknown",
                 "student_email": student.email if student else "Unknown",
                 "submission_text": submission.submission_text,
+                "submission_link": submission.submission_link,
                 "file_name": submission.file_name,
                 "file_path": submission.file_path,
                 "file_size": submission.file_size,

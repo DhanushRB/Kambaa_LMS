@@ -13,6 +13,7 @@ except ImportError:
 class SubmissionType(enum.Enum):
     FILE = "FILE"
     TEXT = "TEXT"
+    LINK = "LINK"
     BOTH = "BOTH"
 
 class QuestionType(enum.Enum):
@@ -41,6 +42,7 @@ class Assignment(Base):
     description = Column(Text, nullable=True)
     instructions = Column(Text, nullable=True)
     file_path = Column(String(500), nullable=True)  # Assignment file (PDF/DOC/ZIP)
+    drive_link = Column(String(1000), nullable=True) # Optional drive/external link
     submission_type = Column(Enum(SubmissionType), default=SubmissionType.FILE)
     start_date = Column(DateTime, nullable=True)
     due_date = Column(DateTime, nullable=False)
@@ -68,6 +70,7 @@ class AssignmentSubmission(Base):
     file_path = Column(String(500), nullable=True)
     file_name = Column(String(200), nullable=True)
     file_size = Column(Integer, nullable=True)
+    submission_link = Column(String(1000), nullable=True) # Optional link from student
     status = Column(Enum(AssignmentStatus), default=AssignmentStatus.SUBMITTED)
     submitted_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

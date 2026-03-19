@@ -242,6 +242,28 @@ DEFAULT_TEMPLATES = {
         "category": "notification",
         "is_default": True,
         "is_enabled": True
+    },
+    "badge_achievement": {
+        "name": "Badge Achievement",
+        "subject": "Congratulations! You've earned the {badge_title} Badge",
+        "body": format_html_template("""
+            <p><span style="color: #10b981; font-weight: bold; font-size: 18px;">Congratulations!</span></p>
+            <p>Dear <strong>{username}</strong>,</p>
+            <p>Great news! You have successfully earned the <strong>{badge_title}</strong> badge through your outstanding performance.</p>
+            
+            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1e40af; text-align: center;">
+                <p><strong>Earned Badge:</strong></p>
+                <p style="font-size: 24px; color: #1e40af; margin: 10px 0;"><strong>{badge_title}</strong></p>
+            </div>
+            
+            <p>Your achievement is a testament to your hard work and dedication. Keep up the excellent work! You can view your new badge on your profile dashboard.</p>
+            
+            <p>Best regards,<br><strong>The Kamba LMS Team</strong></p>
+        """).strip(),
+        "target_role": "Student",
+        "category": "badge",
+        "is_default": True,
+        "is_enabled": True
     }
 }
 
@@ -264,7 +286,7 @@ async def get_default_templates(
     try:
         # Get all default templates from database
         default_templates = db.query(EmailTemplate).filter(
-            EmailTemplate.category.in_(["welcome", "registration", "notification"])
+            EmailTemplate.category.in_(["welcome", "registration", "notification", "badge"])
         ).all()
         
         return [
