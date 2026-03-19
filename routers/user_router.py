@@ -537,20 +537,78 @@ async def delete_user(
             
             # Delete related records safely
             try:
-                # Delete resource views first (no foreign key constraint)
-                from resource_analytics_models import ResourceView
-                db.query(ResourceView).filter(ResourceView.student_id == user_id).delete(synchronize_session=False)
-                
-                # Delete other related records if tables exist
+                # 1. Assignment & Quiz related (from assignment_quiz_models)
                 try:
-                    from database import UserCohort, Enrollment
+                    from assignment_quiz_models import AssignmentSubmission, AssignmentGrade, QuizAttempt, QuizResult, QuizAnswer
+                    
+                    # Delete grades first
+                    db.query(AssignmentGrade).filter(AssignmentGrade.student_id == user_id).delete(synchronize_session=False)
+                    
+                    # Delete results
+                    db.query(QuizResult).filter(QuizResult.student_id == user_id).delete(synchronize_session=False)
+                    
+                    # Delete quiz answers via attempts
+                    attempts = db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).all()
+                    attempt_ids = [a.id for a in attempts]
+                    if attempt_ids:
+                        db.query(QuizAnswer).filter(QuizAnswer.attempt_id.in_(attempt_ids)).delete(synchronize_session=False)
+                    
+                    # Delete attempts
+                    db.query(QuizAttempt).filter(QuizAttempt.student_id == user_id).delete(synchronize_session=False)
+                    
+                    # Delete assignment submissions
+                    db.query(AssignmentSubmission).filter(AssignmentSubmission.student_id == user_id).delete(synchronize_session=False)
+                except Exception as e:
+                    logger.warning(f"Could not delete assignment/quiz records: {str(e)}")
+
+                # 2. Cohort specific related
+                try:
+                    from cohort_specific_models import CohortSpecificEnrollment, CohortAttendance
+                    db.query(CohortSpecificEnrollment).filter(CohortSpecificEnrollment.student_id == user_id).delete(synchronize_session=False)
+                    db.query(CohortAttendance).filter(CohortAttendance.student_id == user_id).delete(synchronize_session=False)
+                except Exception as e:
+                    logger.warning(f"Could not delete cohort specific records: {str(e)}")
+
+                # 3. Main database related
+                try:
+                    from database import (
+                        Attendance, Certificate, ForumPost, StudentSessionStatus, 
+                        StudentModuleStatus, StudentLog, Notification, EmailLog, 
+                        NotificationPreference, EmailRecipient, CourseAssignment,
+                        UserCohort, Enrollment
+                    )
+                    
+                    # Already existing in previous code but unified here
                     db.query(UserCohort).filter(UserCohort.user_id == user_id).delete(synchronize_session=False)
                     db.query(Enrollment).filter(Enrollment.student_id == user_id).delete(synchronize_session=False)
-                except Exception:
-                    pass  # Tables might not exist
+                    
+                    # Additional tables
+                    db.query(Attendance).filter(Attendance.student_id == user_id).delete(synchronize_session=False)
+                    db.query(Certificate).filter(Certificate.student_id == user_id).delete(synchronize_session=False)
+                    db.query(ForumPost).filter(ForumPost.user_id == user_id).delete(synchronize_session=False)
+                    db.query(StudentSessionStatus).filter(StudentSessionStatus.student_id == user_id).delete(synchronize_session=False)
+                    db.query(StudentModuleStatus).filter(StudentModuleStatus.student_id == user_id).delete(synchronize_session=False)
+                    db.query(StudentLog).filter(StudentLog.student_id == user_id).delete(synchronize_session=False)
+                    db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
+                    db.query(EmailLog).filter(EmailLog.user_id == user_id).delete(synchronize_session=False)
+                    db.query(EmailRecipient).filter(EmailRecipient.user_id == user_id).delete(synchronize_session=False)
+                    db.query(CourseAssignment).filter(CourseAssignment.user_id == user_id).delete(synchronize_session=False)
+                    
+                    # Delete notification preference last as it has student_id as primary key
+                    db.query(NotificationPreference).filter(NotificationPreference.user_id == user_id).delete(synchronize_session=False)
+                    
+                except Exception as e:
+                    logger.warning(f"Could not delete main database related records: {str(e)}")
+
+                # 4. Resource analytics (from resource_analytics_models)
+                try:
+                    from resource_analytics_models import ResourceView
+                    db.query(ResourceView).filter(ResourceView.student_id == user_id).delete(synchronize_session=False)
+                except Exception as e:
+                    logger.warning(f"Could not delete resource analytics records: {str(e)}")
                     
             except Exception as e:
-                logger.warning(f"Could not delete some related records: {str(e)}")
+                logger.error(f"Fatal error during related records cleanup: {str(e)}")
             
             # Delete the user
             db.delete(user)
