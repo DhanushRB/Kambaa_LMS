@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi.responses import Response, RedirectResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr
@@ -8,9 +9,13 @@ from database import (
 )
 from auth import get_current_admin_or_presenter
 from notification_service import NotificationService
-from datetime import datetime
+from datetime import datetime, timedelta
+from sqlalchemy import func
 import logging
 import json
+import base64
+import re
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +148,7 @@ async def create_campaign(
         logger.error(f"Create campaign error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create campaign")
 
-async def send_campaign_immediately(campaign_id: int, db: Session):
+async def send_campaign_immediately(campaign_id: int, db: Session, base_url: Optional[str] = None):
     """Send campaign immediately without background tasks"""
     from notification_service import NotificationService
     from database import EmailTemplate, EmailRecipient, User, Admin, Presenter, Mentor, UserCohort, Cohort
@@ -224,16 +229,26 @@ async def send_campaign_immediately(campaign_id: int, db: Session):
                     )
                     db.add(recipient)
                     
+                    # Use provided base_url or fallback to environment/default
+                    if not base_url:
+                        base_url = os.getenv("BASE_URL", "http://localhost:8000")
+                    
+                    if base_url.endswith("/"):
+                        base_url = base_url[:-1]
+
                     # Send email
                     email_body = template.body.replace("{username}", getattr(user, 'username', user.email))
                     email_body = email_body.replace("{email}", user.email)
+                    
+                    # Process body for tracking
+                    tracked_body = process_email_body(email_body, recipient.id, base_url)
                     
                     # Send email synchronously
                     email_log = service.send_email_notification(
                         user_id=getattr(user, 'id', None),
                         email=user.email,
                         subject=template.subject,
-                        body=email_body
+                        body=tracked_body
                     )
                     
                     if email_log.status in ["sent", "queued"]:
@@ -270,17 +285,103 @@ async def send_campaign_immediately(campaign_id: int, db: Session):
         except:
             pass
 
+def process_email_body(body: str, recipient_id: int, base_url: str) -> str:
+    """Inject tracking pixel and wrap links for tracking"""
+    # 1. Inject tracking pixel before </body> or at the end
+    tracking_pixel = f'<img src="{base_url}/api/campaigns/track/open/{recipient_id}" width="1" height="1" style="display:none;" />'
+    
+    if "</body>" in body:
+        body = body.replace("</body>", f"{tracking_pixel}</body>")
+    else:
+        body += tracking_pixel
+        
+    # 2. Wrap links for click tracking
+    def replace_link(match):
+        url = match.group(1)
+        # Skip tracking for internal tracking URLs or already tracked URLs
+        if "/api/campaigns/track" in url:
+            return match.group(0)
+            
+        encoded_url = base64.urlsafe_b64encode(url.encode()).decode()
+        tracked_url = f"{base_url}/api/campaigns/track/click/{recipient_id}?url={encoded_url}"
+        return f'href="{tracked_url}"'
+
+    # Regex to find href links
+    body = re.sub(r'href=["\'](https?://[^"\']+)["\']', replace_link, body)
+    
+    return body
+
+@router.get("/track/open/{recipient_id}")
+async def track_open(recipient_id: int, db: Session = Depends(get_db)):
+    """Track email open via 1x1 transparent pixel"""
+    try:
+        recipient = db.query(EmailRecipient).filter(EmailRecipient.id == recipient_id).first()
+        if recipient and not recipient.opened_at:
+            recipient.opened_at = datetime.utcnow()
+            recipient.status = "opened"
+            db.commit()
+            
+            # Also update campaign delivered count if first open
+            campaign = db.query(EmailCampaign).filter(EmailCampaign.id == recipient.campaign_id).first()
+            if campaign:
+                # Simple delivered count increment (if Status was sent)
+                # Note: In real setup, SMTP success = delivered, but here we use open as delivered signal
+                campaign.delivered_count = (campaign.delivered_count or 0) + 1
+                db.commit()
+                
+        # Return 1x1 transparent GIF
+        pixel_data = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+        return Response(content=pixel_data, media_type="image/gif")
+    except Exception as e:
+        logger.error(f"Track open error: {str(e)}")
+        # Still return the pixel even if DB update fails
+        pixel_data = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
+        return Response(content=pixel_data, media_type="image/gif")
+
+@router.get("/track/click/{recipient_id}")
+async def track_click(recipient_id: int, url: str, db: Session = Depends(get_db)):
+    """Track link click and redirect"""
+    try:
+        # Decode the target URL
+        target_url = base64.urlsafe_b64decode(url.encode()).decode()
+        
+        recipient = db.query(EmailRecipient).filter(EmailRecipient.id == recipient_id).first()
+        if recipient:
+            if not recipient.clicked_at:
+                recipient.clicked_at = datetime.utcnow()
+                recipient.status = "clicked"
+                db.commit()
+            
+            # If not already opened, mark as opened too
+            if not recipient.opened_at:
+                recipient.opened_at = datetime.utcnow()
+                db.commit()
+        
+        return RedirectResponse(url=target_url)
+    except Exception as e:
+        logger.error(f"Track click error: {str(e)}")
+        # Attempt to redirect even if tracking fails if URL is valid
+        try:
+            target_url = base64.urlsafe_b64decode(url.encode()).decode()
+            return RedirectResponse(url=target_url)
+        except:
+            raise HTTPException(status_code=400, detail="Invalid tracking URL")
+
 @router.post("/send/{campaign_id}")
 async def send_campaign(
     campaign_id: int,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_admin = Depends(get_current_admin_or_presenter),
     db: Session = Depends(get_db)
 ):
     """Send email campaign"""
     try:
+        # Get base URL from request for tracking
+        base_url = str(request.base_url)
+        
         # Use the immediate send function
-        await send_campaign_immediately(campaign_id, db)
+        await send_campaign_immediately(campaign_id, db, base_url=base_url)
         
         # Get updated campaign status
         campaign = db.query(EmailCampaign).filter(EmailCampaign.id == campaign_id).first()
@@ -492,12 +593,120 @@ async def delete_campaign(
         logger.error(f"Delete campaign error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to delete campaign")
 
+@router.get("/analytics")
+async def get_detailed_campaign_analytics(
+    days: int = 30,
+    current_admin = Depends(get_current_admin_or_presenter),
+    db: Session = Depends(get_db)
+):
+    """Get detailed campaign analytics for dashboard charts"""
+    try:
+        # Start date for analytics
+        start_date = datetime.utcnow() - timedelta(days=days)
+        
+        # 1. Overall aggregated stats
+        total_campaigns = db.query(EmailCampaign).count()
+        
+        # Count all recipients that were at least attempted/sent
+        total_sent = db.query(EmailRecipient).filter(
+            EmailRecipient.status.in_(["sent", "delivered", "opened", "clicked"])
+        ).count()
+        
+        # In our system, 'sent' status from SMTP is treated as delivered
+        total_delivered = db.query(EmailRecipient).filter(
+            EmailRecipient.status.in_(["sent", "delivered", "opened", "clicked"])
+        ).count()
+        
+        total_opened = db.query(EmailRecipient).filter(EmailRecipient.opened_at.isnot(None)).count()
+        total_clicked = db.query(EmailRecipient).filter(EmailRecipient.clicked_at.isnot(None)).count()
+        total_failed = db.query(EmailRecipient).filter(EmailRecipient.status == "failed").count()
+        
+        # 2. Time-series data (Daily Sends, Opens, Clicks)
+        # Using func.date to group by day
+        daily_stats_query = db.query(
+            func.date(EmailRecipient.sent_at).label('date'),
+            func.count(EmailRecipient.id).label('sent'),
+            func.count(EmailRecipient.opened_at).label('opened'),
+            func.count(EmailRecipient.clicked_at).label('clicked')
+        ).filter(
+            EmailRecipient.sent_at >= start_date
+        ).group_by(
+            func.date(EmailRecipient.sent_at)
+        ).order_by(
+            func.date(EmailRecipient.sent_at)
+        ).all()
+        
+        daily_stats = [
+            {
+                "date": str(s.date),
+                "sent": s.sent,
+                "opened": s.opened,
+                "clicked": s.clicked
+            }
+            for s in daily_stats_query
+        ]
+        
+        # 3. Top Campaign Performance
+        campaigns_performance = db.query(
+            EmailCampaign.id,
+            EmailCampaign.name,
+            EmailCampaign.sent_count,
+            # Subqueries for counts
+            db.query(func.count(EmailRecipient.id)).filter(
+                EmailRecipient.campaign_id == EmailCampaign.id,
+                EmailRecipient.opened_at.isnot(None)
+            ).label('opened_count'),
+            db.query(func.count(EmailRecipient.id)).filter(
+                EmailRecipient.campaign_id == EmailCampaign.id,
+                EmailRecipient.clicked_at.isnot(None)
+            ).label('clicked_count')
+        ).filter(
+            EmailCampaign.status == "completed"
+        ).order_by(
+            EmailCampaign.completed_at.desc()
+        ).limit(10).all()
+        
+        campaign_performance = []
+        for c in campaigns_performance:
+            sent = c.sent_count or 0
+            open_rate = round((c.opened_count / sent * 100), 2) if sent > 0 else 0
+            click_rate = round((c.clicked_count / sent * 100), 2) if sent > 0 else 0
+            
+            campaign_performance.append({
+                "id": c.id,
+                "name": c.name,
+                "sent": sent,
+                "opened": c.opened_count,
+                "clicked": c.clicked_count,
+                "open_rate": open_rate,
+                "click_rate": click_rate
+            })
+            
+        return {
+            "summary": {
+                "total_campaigns": total_campaigns,
+                "total_sent": total_sent,
+                "total_delivered": total_delivered,
+                "total_opened": total_opened,
+                "total_clicked": total_clicked,
+                "total_failed": total_failed,
+                "delivery_rate": round(total_delivered / total_sent * 100, 2) if total_sent > 0 else 0,
+                "open_rate": round(total_opened / total_sent * 100, 2) if total_sent > 0 else 0,
+                "click_rate": round(total_clicked / total_sent * 100, 2) if total_sent > 0 else 0
+            },
+            "daily_stats": daily_stats,
+            "campaign_performance": campaign_performance
+        }
+    except Exception as e:
+        logger.error(f"Detailed analytics error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get detailed analytics: {str(e)}")
+
 @router.get("/stats")
 async def get_campaign_stats(
     current_admin = Depends(get_current_admin_or_presenter),
     db: Session = Depends(get_db)
 ):
-    """Get comprehensive campaign statistics"""
+    """Keep existing get_campaign_stats for backward compatibility or simple overview"""
     try:
         student_count = db.query(User).filter(User.role == "Student").count()
         admin_count = db.query(Admin).count()

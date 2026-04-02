@@ -65,6 +65,7 @@ class MentorUpdateWithAssignments(BaseModel):
     is_active: Optional[bool] = None
     cohort_ids: Optional[List[int]] = None
     course_ids: Optional[List[int]] = None
+    module_ids: Optional[List[int]] = None
     session_ids: Optional[List[int]] = None
 
 class MentorAssignment(BaseModel):
@@ -427,9 +428,24 @@ async def get_mentor_assignments(
             MentorSession.mentor_id == mentor_id
         ).all()]
         
+        # Derive module_ids from assigned sessions
+        module_ids = []
+        for session_id in session_ids:
+            # Check global sessions
+            session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+            if session:
+                if session.module_id and session.module_id not in module_ids:
+                    module_ids.append(session.module_id)
+            else:
+                # Check cohort-specific sessions
+                cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+                if cohort_session and cohort_session.module_id and cohort_session.module_id not in module_ids:
+                    module_ids.append(cohort_session.module_id)
+        
         return {
             "cohort_ids": cohort_ids,
             "course_ids": course_ids,
+            "module_ids": module_ids,
             "session_ids": session_ids
         }
     except HTTPException:
@@ -514,6 +530,7 @@ async def update_mentor(
             # Add new session assignments
             if mentor_data.session_ids:
                 for session_id in mentor_data.session_ids:
+                    # Check global sessions
                     session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
                     if session:
                         session_assignment = MentorSession(
@@ -523,6 +540,18 @@ async def update_mentor(
                             assigned_by=current_admin.id
                         )
                         db.add(session_assignment)
+                    else:
+                        # Check cohort-specific sessions
+                        cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+                        if cohort_session:
+                            session_assignment = MentorSession(
+                                mentor_id=mentor_id,
+                                session_id=session_id,
+                                course_id=cohort_session.module.course_id if cohort_session.module else None,
+                                cohort_id=cohort_session.module.course.cohort_id if (cohort_session.module and cohort_session.module.course) else None,
+                                assigned_by=current_admin.id
+                            )
+                            db.add(session_assignment)
         
         db.commit()
         db.refresh(mentor)
@@ -735,46 +764,83 @@ async def get_mentor_sessions(
     current_mentor: Mentor = Depends(get_current_mentor),
     db: Session = Depends(get_db)
 ):
-    """Get only sessions specifically assigned to mentor by admin"""
+    """Get all sessions (global and cohort-specific) assigned to mentor"""
     try:
-        # Only get sessions that are explicitly assigned to this mentor
-        sessions = db.query(SessionModel).join(MentorSession).filter(
+        # Get assigned cohort IDs for access checks
+        assigned_cohort_ids = [mc.cohort_id for mc in db.query(MentorCohort).filter(
+            MentorCohort.mentor_id == current_mentor.id
+        ).all()]
+        
+        # Get all MentorSession records
+        mentor_sessions = db.query(MentorSession).filter(
             MentorSession.mentor_id == current_mentor.id
         ).all()
         
         session_list = []
-        for session in sessions:
+        for ms in mentor_sessions:
+            # Determine if it's a global or cohort session
+            # We can use cohort_id in MentorSession as a hint, or just try both tables
+            session = db.query(SessionModel).filter(SessionModel.id == ms.session_id).first()
+            is_cohort = False
+            
+            if not session:
+                session = db.query(CohortCourseSession).filter(CohortCourseSession.id == ms.session_id).first()
+                is_cohort = True
+            
+            if not session:
+                continue
+                
             module = session.module
             course = module.course if module else None
             
-            # Additional check: ensure mentor has access to the course
+            # Access check: Direct assignment or via assigned cohort
+            has_course_access = False
             if course:
+                # Direct course assignment
                 course_assignment = db.query(MentorCourse).filter(
                     and_(
                         MentorCourse.mentor_id == current_mentor.id,
                         MentorCourse.course_id == course.id
                     )
                 ).first()
-                
-                # Only include session if mentor has course access
                 if course_assignment:
-                    session_list.append({
-                        "id": session.id,
-                        "title": session.title,
-                        "description": session.description,
-                        "session_number": session.session_number,
-                        "scheduled_time": session.scheduled_time,
-                        "duration_minutes": session.duration_minutes,
-                        "zoom_link": session.zoom_link,
-                        "module": {
-                            "id": module.id,
-                            "title": module.title
-                        } if module else None,
-                        "course": {
-                            "id": course.id,
-                            "title": course.title
-                        } if course else None
-                    })
+                    has_course_access = True
+                elif assigned_cohort_ids:
+                    # Check if course is linked to one of the mentor's cohorts
+                    if is_cohort:
+                        if hasattr(course, 'cohort_id') and course.cohort_id in assigned_cohort_ids:
+                            has_course_access = True
+                    else:
+                        link = db.query(CohortCourse).filter(
+                            and_(
+                                CohortCourse.cohort_id.in_(assigned_cohort_ids),
+                                CohortCourse.course_id == course.id
+                            )
+                        ).first()
+                        if link:
+                            has_course_access = True
+            
+            # Note: We include the session even if course access check fails if it was explicitly assigned
+            # but following the previous logic of being strict:
+            if has_course_access:
+                session_list.append({
+                    "id": session.id,
+                    "title": session.title,
+                    "description": session.description,
+                    "session_number": session.session_number,
+                    "scheduled_time": session.scheduled_time,
+                    "duration_minutes": session.duration_minutes,
+                    "zoom_link": session.zoom_link,
+                    "is_cohort_specific": is_cohort,
+                    "module": {
+                        "id": module.id,
+                        "title": module.title
+                    } if module else None,
+                    "course": {
+                        "id": course.id,
+                        "title": course.title
+                    } if course else None
+                })
         
         return {"sessions": session_list}
     except Exception as e:
@@ -787,7 +853,7 @@ async def get_session_content_for_mentor(
     current_mentor: Mentor = Depends(get_current_mentor),
     db: Session = Depends(get_db)
 ):
-    """Get content for a specific session (mentor view)"""
+    """Get content for a specific session (mentor view) supporting both global and cohort sessions"""
     try:
         # Verify mentor has access to this session
         assignment = db.query(MentorSession).filter(
@@ -800,11 +866,24 @@ async def get_session_content_for_mentor(
         if not assignment:
             raise HTTPException(status_code=403, detail="You don't have access to this session")
         
-        # Get resources
-        resources = db.query(Resource).filter(Resource.session_id == session_id).all()
+        # Determine if it's a cohort-specific session
+        # Use simple heuristic: if cohort_id is set in assignment, it's likely a cohort session
+        is_cohort = assignment.cohort_id is not None
         
-        # Get session content (including meeting links)
-        content = db.query(SessionContent).filter(SessionContent.session_id == session_id).all()
+        # If not sure, cross-check tables
+        if not is_cohort:
+            cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+            if cohort_session:
+                is_cohort = True
+        
+        # Get resources from appropriate tables
+        if is_cohort:
+            from cohort_specific_models import CohortSessionContent, CohortCourseResource
+            resources = db.query(CohortCourseResource).filter(CohortCourseResource.session_id == session_id).all()
+            content = db.query(CohortSessionContent).filter(CohortSessionContent.session_id == session_id).all()
+        else:
+            resources = db.query(Resource).filter(Resource.session_id == session_id).all()
+            content = db.query(SessionContent).filter(SessionContent.session_id == session_id).all()
         
         # Get quizzes (only if Quiz model is available)
         quizzes = []
@@ -976,32 +1055,73 @@ async def get_mentor_courses(
 ):
     """Get only courses assigned to mentor by admin"""
     try:
-        # Only get courses that are explicitly assigned to this mentor
-        query = db.query(Course).join(MentorCourse).filter(
+        # 1. Get explicitly assigned global courses
+        explicit_courses = db.query(Course).join(MentorCourse).filter(
             MentorCourse.mentor_id == current_mentor.id
-        )
+        ).all()
         
-        # Apply filters
-        if search:
-            query = query.filter(
-                or_(
-                    Course.title.ilike(f"%{search}%"),
-                    Course.description.ilike(f"%{search}%")
-                )
-            )
+        # 2. Get assigned cohorts
+        assigned_cohort_ids = [mc.cohort_id for mc in db.query(MentorCohort).filter(
+            MentorCohort.mentor_id == current_mentor.id
+        ).all()]
         
-        # Note: Removed is_active filter since Course model doesn't have this attribute
+        # 3. Get courses from assigned cohorts
+        cohort_courses_list = []
+        if assigned_cohort_ids:
+            # Global courses linked to assigned cohorts
+            global_cohort_courses = db.query(Course).join(CohortCourse).filter(
+                CohortCourse.cohort_id.in_(assigned_cohort_ids)
+            ).all()
+            cohort_courses_list.extend(global_cohort_courses)
+            
+            # Cohort-specific courses
+            specific_cohort_courses = db.query(CohortSpecificCourse).filter(
+                CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids)
+            ).all()
+            # We need to map cohort-specific courses to a similar structure if they differ
+            cohort_courses_list.extend(specific_cohort_courses)
         
-        courses = query.all()
+        # Combine and deduplicate by ID and type (using ID is enough for global vs specific if we handle them)
+        processed_courses = {}
+        
+        # Add explicit courses
+        for c in explicit_courses:
+            processed_courses[f"global-{c.id}"] = {
+                "course": c,
+                "is_specific": False
+            }
+            
+        # Add cohort courses (may overlap with explicit)
+        for c in cohort_courses_list:
+            is_specific = isinstance(c, CohortSpecificCourse)
+            key = f"{'spec' if is_specific else 'global'}-{c.id}"
+            if key not in processed_courses:
+                processed_courses[key] = {
+                    "course": c,
+                    "is_specific": is_specific
+                }
         
         course_list = []
-        for course in courses:
-            # Get course statistics
-            modules_count = db.query(Module).filter(Module.course_id == course.id).count()
-            enrolled_students = db.query(Enrollment).filter(Enrollment.course_id == course.id).count()
+        for key, data in processed_courses.items():
+            course = data["course"]
+            is_specific = data["is_specific"]
             
-            # Calculate duration from modules
-            max_week = db.query(func.max(Module.week_number)).filter(Module.course_id == course.id).scalar()
+            # Get course statistics
+            if is_specific:
+                modules_count = db.query(CohortCourseModule).filter(CohortCourseModule.course_id == course.id).count()
+                # Enrollments for specific courses are in CohortSpecificEnrollment or similar?
+                # For now, use 0 or check if cohort has students
+                enrolled_students = 0 # Placeholder or fetch from cohort
+            else:
+                modules_count = db.query(Module).filter(Module.course_id == course.id).count()
+                enrolled_students = db.query(Enrollment).filter(Enrollment.course_id == course.id).count()
+            
+            # Calculate duration
+            if is_specific:
+                max_week = db.query(func.max(CohortCourseModule.week_number)).filter(CohortCourseModule.course_id == course.id).scalar()
+            else:
+                max_week = db.query(func.max(Module.week_number)).filter(Module.course_id == course.id).scalar()
+                
             duration_weeks = max_week if max_week else 0
             
             course_list.append({
@@ -1011,10 +1131,11 @@ async def get_mentor_courses(
                 "duration_weeks": duration_weeks,
                 "modules_count": modules_count,
                 "enrolled_students": enrolled_students,
-                "is_active": True,  # Default to True since Course model doesn't have is_active
+                "is_active": True,
+                "is_cohort_specific": is_specific,
                 "created_at": course.created_at
             })
-        
+            
         return {"courses": course_list}
     except Exception as e:
         logger.error(f"Get mentor courses error: {str(e)}")
@@ -1028,7 +1149,8 @@ async def get_mentor_course_modules(
 ):
     """Get only modules for assigned course"""
     try:
-        # Verify mentor has access to this course
+        # Verify mentor has access to this course (either direct assignment or via assigned cohort)
+        # 1. Direct assignment
         assignment = db.query(MentorCourse).filter(
             and_(
                 MentorCourse.mentor_id == current_mentor.id,
@@ -1036,7 +1158,36 @@ async def get_mentor_course_modules(
             )
         ).first()
         
-        if not assignment:
+        has_access = assignment is not None
+        
+        # 2. Access via assigned cohort
+        if not has_access:
+            assigned_cohort_ids = [mc.cohort_id for mc in db.query(MentorCohort).filter(
+                MentorCohort.mentor_id == current_mentor.id
+            ).all()]
+            
+            if assigned_cohort_ids:
+                # Check global link
+                link = db.query(CohortCourse).filter(
+                    and_(
+                        CohortCourse.cohort_id.in_(assigned_cohort_ids),
+                        CohortCourse.course_id == course_id
+                    )
+                ).first()
+                if link:
+                    has_access = True
+                else:
+                    # Check cohort-specific courses
+                    spec_link = db.query(CohortSpecificCourse).filter(
+                        and_(
+                            CohortSpecificCourse.cohort_id.in_(assigned_cohort_ids),
+                            CohortSpecificCourse.id == course_id
+                        )
+                    ).first()
+                    if spec_link:
+                        has_access = True
+        
+        if not has_access:
             raise HTTPException(status_code=403, detail="You don't have access to this course")
         
         # Determine if it's a global or cohort course
@@ -1046,19 +1197,31 @@ async def get_mentor_course_modules(
         if not modules:
             modules = db.query(CohortCourseModule).filter(CohortCourseModule.course_id == course_id).order_by(CohortCourseModule.week_number).all()
             is_cohort = True
-        
         module_list = []
         for module in modules:
             # Only count sessions that are assigned to this mentor
             if is_cohort:
-                assigned_sessions = db.query(CohortCourseSession).join(MentorSession, MentorSession.session_id == CohortCourseSession.id).filter(
+                # Use a specific join to avoid confusion with global sessions if IDs overlap
+                assigned_sessions = db.query(CohortCourseSession).join(
+                    MentorSession, 
+                    and_(
+                        MentorSession.session_id == CohortCourseSession.id,
+                        MentorSession.cohort_id.isnot(None) # Marker for cohort sessions
+                    )
+                ).filter(
                     and_(
                         CohortCourseSession.module_id == module.id,
                         MentorSession.mentor_id == current_mentor.id
                     )
                 ).all()
             else:
-                assigned_sessions = db.query(SessionModel).join(MentorSession, MentorSession.session_id == SessionModel.id).filter(
+                assigned_sessions = db.query(SessionModel).join(
+                    MentorSession, 
+                    and_(
+                        MentorSession.session_id == SessionModel.id,
+                        MentorSession.cohort_id.is_(None) # Marker for global sessions
+                    )
+                ).filter(
                     and_(
                         SessionModel.module_id == module.id,
                         MentorSession.mentor_id == current_mentor.id
@@ -1082,14 +1245,25 @@ async def get_mentor_course_modules(
                 for s in assigned_sessions
             ])
             
-            # Only include module if mentor has assigned sessions in it
-            if assigned_sessions:
+            # Get total sessions count for this module (all sessions, not just assigned)
+            if is_cohort:
+                total_sessions_in_module = db.query(CohortCourseSession).filter(
+                    CohortCourseSession.module_id == module.id
+                ).count()
+            else:
+                total_sessions_in_module = db.query(SessionModel).filter(
+                    SessionModel.module_id == module.id
+                ).count()
+            
+            # Only add modules that have at least one assigned session (per user requirement)
+            if len(assigned_sessions) > 0:
                 module_list.append({
                     "id": module.id,
                     "week_number": module.week_number,
                     "title": module.title,
                     "description": module.description,
-                    "sessions_count": len(assigned_sessions),
+                    "sessions_count": total_sessions_in_module,
+                    "assigned_sessions_count": len(assigned_sessions),
                     "resources_count": total_resources,
                     "quizzes_count": total_quizzes,
                     "is_cohort_specific": is_cohort,
@@ -1122,7 +1296,8 @@ async def get_mentor_module_sessions(
                 raise HTTPException(status_code=404, detail="Module not found")
             is_cohort = True
         
-        # Verify mentor has access to this course
+        # Verify mentor has access to this course (direct or via assigned cohort)
+        # 1. Direct course assignment
         course_assignment = db.query(MentorCourse).filter(
             and_(
                 MentorCourse.mentor_id == current_mentor.id,
@@ -1130,30 +1305,57 @@ async def get_mentor_module_sessions(
             )
         ).first()
         
-        if not course_assignment:
-            # If not direct course assignment, check if mentor is assigned to the cohort
-            if is_cohort:
-                cohort_assignment = db.query(MentorCohort).filter(
-                    and_(
-                        MentorCohort.mentor_id == current_mentor.id,
-                        MentorCohort.cohort_id == module.course.cohort_id if hasattr(module, 'course') else None
-                    )
-                ).first()
-                if not cohort_assignment:
-                    raise HTTPException(status_code=403, detail="You don't have access to this module")
-            else:
-                raise HTTPException(status_code=403, detail="You don't have access to this module")
+        has_access = course_assignment is not None
+        
+        # 2. Access via assigned cohort
+        if not has_access:
+            assigned_cohort_ids = [mc.cohort_id for mc in db.query(MentorCohort).filter(
+                MentorCohort.mentor_id == current_mentor.id
+            ).all()]
+            
+            if assigned_cohort_ids:
+                # Get the cohort ID for this specific course/module context
+                # For cohort modules, it's easy
+                current_context_cohort_id = module.course.cohort_id if is_cohort and hasattr(module, 'course') else None
+                
+                if current_context_cohort_id and current_context_cohort_id in assigned_cohort_ids:
+                    has_access = True
+                else:
+                    # Check if global course is linked to any of the mentor's cohorts
+                    link = db.query(CohortCourse).filter(
+                        and_(
+                            CohortCourse.cohort_id.in_(assigned_cohort_ids),
+                            CohortCourse.course_id == module.course_id
+                        )
+                    ).first()
+                    if link:
+                        has_access = True
+        
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have access to this module")
         
         # Only get sessions that are specifically assigned to this mentor
         if is_cohort:
-            sessions = db.query(CohortCourseSession).join(MentorSession, MentorSession.session_id == CohortCourseSession.id).filter(
+            sessions = db.query(CohortCourseSession).join(
+                MentorSession, 
+                and_(
+                    MentorSession.session_id == CohortCourseSession.id,
+                    MentorSession.cohort_id.isnot(None)
+                )
+            ).filter(
                 and_(
                     CohortCourseSession.module_id == module_id,
                     MentorSession.mentor_id == current_mentor.id
                 )
             ).order_by(CohortCourseSession.session_number).all()
         else:
-            sessions = db.query(SessionModel).join(MentorSession, MentorSession.session_id == SessionModel.id).filter(
+            sessions = db.query(SessionModel).join(
+                MentorSession, 
+                and_(
+                    MentorSession.session_id == SessionModel.id,
+                    MentorSession.cohort_id.is_(None)
+                )
+            ).filter(
                 and_(
                     SessionModel.module_id == module_id,
                     MentorSession.mentor_id == current_mentor.id
@@ -1338,17 +1540,36 @@ async def upload_resource_for_mentor(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # Create resource record
-        resource = Resource(
-            session_id=session_id,
-            title=title,
-            description=description,
-            resource_type=resource_type,
-            file_path=str(file_path),
-            file_size=file_path.stat().st_size,
-            uploaded_by=current_mentor.id
-        )
-        db.add(resource)
+        # Check if it's a cohort-specific session
+        from cohort_specific_models import CohortCourseSession, CohortSessionContent
+        cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+        
+        if cohort_session:
+            # Create cohort-specific resource record
+            resource = CohortSessionContent(
+                session_id=session_id,
+                content_type="RESOURCE",
+                title=title,
+                description=description,
+                file_path=str(file_path),
+                file_type=Path(file.filename).suffix.lstrip('.'),
+                file_size=file_path.stat().st_size,
+                uploaded_by=current_mentor.id
+            )
+            db.add(resource)
+        else:
+            # Create global resource record
+            resource = Resource(
+                session_id=session_id,
+                title=title,
+                description=description,
+                resource_type=resource_type,
+                file_path=str(file_path),
+                file_size=file_path.stat().st_size,
+                uploaded_by=current_mentor.id
+            )
+            db.add(resource)
+            
         db.commit()
         db.refresh(resource)
         
@@ -1404,17 +1625,35 @@ async def create_session_content_for_mentor(
         if not assignment:
             raise HTTPException(status_code=403, detail="You don't have access to this session")
         
-        # Create session content record
-        session_content = SessionContent(
-            session_id=session_id,
-            title=content_data.get('title', ''),
-            description=content_data.get('description', ''),
-            content_type=content_data.get('content_type', 'MATERIAL'),
-            meeting_url=content_data.get('meeting_url'),
-            scheduled_time=content_data.get('scheduled_time'),
-            uploaded_by=current_mentor.id
-        )
-        db.add(session_content)
+        # Check if it's a cohort-specific session
+        from cohort_specific_models import CohortCourseSession, CohortSessionContent
+        cohort_session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+        
+        if cohort_session:
+            # Create cohort-specific session content record
+            session_content = CohortSessionContent(
+                session_id=session_id,
+                title=content_data.get('title', ''),
+                description=content_data.get('description', ''),
+                content_type=content_data.get('content_type', 'MATERIAL'),
+                meeting_url=content_data.get('meeting_url'),
+                scheduled_time=content_data.get('scheduled_time'),
+                uploaded_by=current_mentor.id
+            )
+            db.add(session_content)
+        else:
+            # Create global session content record
+            session_content = SessionContent(
+                session_id=session_id,
+                title=content_data.get('title', ''),
+                description=content_data.get('description', ''),
+                content_type=content_data.get('content_type', 'MATERIAL'),
+                meeting_url=content_data.get('meeting_url'),
+                scheduled_time=content_data.get('scheduled_time'),
+                uploaded_by=current_mentor.id
+            )
+            db.add(session_content)
+            
         db.commit()
         db.refresh(session_content)
         
@@ -1446,4 +1685,450 @@ async def create_session_content_for_mentor(
         db.rollback()
         logger.error(f"Create session content error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create session content")
+
+# ==================== MENTOR CRUD FOR ASSIGNED SESSIONS ====================
+
+@router.put("/mentor/sessions/{session_id}")
+async def update_mentor_assigned_session(
+    session_id: int,
+    session_data: dict,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor updates an assigned session (title, description, time, duration, links)"""
+    try:
+        # Verify mentor has access to this session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to this session")
+        
+        # Check if it's a global or cohort session
+        session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+        is_cohort = False
+        
+        if not session:
+            from cohort_specific_models import CohortCourseSession
+            session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+            is_cohort = True
+            
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        # Allowed fields for mentor to update
+        allowed_fields = [
+            'title', 'description', 'scheduled_time', 'duration_minutes', 
+            'zoom_link', 'recording_url', 'syllabus_content'
+        ]
+        
+        for field in allowed_fields:
+            if field in session_data and field not in ['scheduled_date', 'scheduled_time']:
+                setattr(session, field, session_data[field])
+        
+        # Handle datetime update separately
+        if 'scheduled_date' in session_data and 'scheduled_time' in session_data:
+            try:
+                date_str = f"{session_data['scheduled_date']} {session_data['scheduled_time']}"
+                session.scheduled_time = datetime.strptime(date_str, '%Y-%m-%d %H:%M')
+            except Exception as e:
+                logger.error(f"Error parsing datetime in update: {str(e)}")
+        elif 'scheduled_time' in session_data and isinstance(session_data['scheduled_time'], str) and len(session_data['scheduled_time']) > 10:
+            # Handle ISO format if sent as a single field
+            try:
+                session.scheduled_time = datetime.fromisoformat(session_data['scheduled_time'].replace('Z', '+00:00'))
+            except:
+                pass
+        
+        db.commit()
+        
+        # Log the action
+        log_mentor_action(
+            mentor_id=current_mentor.id,
+            mentor_username=current_mentor.username,
+            action_type="UPDATE",
+            resource_type="SESSION",
+            resource_id=session_id,
+            details=f"Updated assigned session: {getattr(session, 'title', session_id)}",
+            db=db
+        )
+        
+        return {"message": "Session updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update mentor session error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/mentor/sessions/{session_id}")
+async def delete_mentor_assigned_session(
+    session_id: int,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor deletes an assigned session"""
+    try:
+        # Verify mentor has access to this session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to this session")
+        
+        # Check if it's a global or cohort session
+        session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+        if not session:
+            from cohort_specific_models import CohortCourseSession
+            session = db.query(CohortCourseSession).filter(CohortCourseSession.id == session_id).first()
+            
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        session_title = getattr(session, 'title', f"Session {session_id}")
+        
+        # Delete the session
+        db.delete(session)
+        # Also delete the mentor assignment link
+        db.delete(assignment)
+        db.commit()
+        
+        # Log the action
+        log_mentor_action(
+            mentor_id=current_mentor.id,
+            mentor_username=current_mentor.username,
+            action_type="DELETE",
+            resource_type="SESSION",
+            resource_id=session_id,
+            details=f"Deleted assigned session: {session_title}",
+            db=db
+        )
+        
+        return {"message": "Session deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete mentor session error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/mentor/resources/{resource_id}")
+async def update_mentor_assigned_resource(
+    resource_id: int,
+    resource_data: dict,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor updates an assigned resource's metadata"""
+    try:
+        # First check global resources
+        resource = db.query(Resource).filter(Resource.id == resource_id).first()
+        is_cohort = False
+        
+        if not resource:
+            from cohort_specific_models import CohortSessionContent
+            resource = db.query(CohortSessionContent).filter(
+                and_(
+                    CohortSessionContent.id == resource_id,
+                    CohortSessionContent.content_type == "RESOURCE"
+                )
+            ).first()
+            is_cohort = True
+            
+        if not resource:
+            raise HTTPException(status_code=404, detail="Resource not found")
+            
+        # Verify mentor has access to the parent session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == resource.session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to the session for this resource")
+            
+        # Update metadata
+        if 'title' in resource_data:
+            resource.title = resource_data['title']
+        if 'description' in resource_data:
+            resource.description = resource_data['description']
+        if not is_cohort and 'resource_type' in resource_data:
+            resource.resource_type = resource_data['resource_type']
+            
+        db.commit()
+        
+        return {"message": "Resource updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update mentor resource error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/mentor/resources/{resource_id}")
+async def delete_mentor_assigned_resource(
+    resource_id: int,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor deletes an assigned resource"""
+    try:
+        # First check global resources
+        resource = db.query(Resource).filter(Resource.id == resource_id).first()
+        
+        if not resource:
+            from cohort_specific_models import CohortSessionContent
+            resource = db.query(CohortSessionContent).filter(
+                and_(
+                    CohortSessionContent.id == resource_id,
+                    CohortSessionContent.content_type == "RESOURCE"
+                )
+            ).first()
+            
+        if not resource:
+            raise HTTPException(status_code=404, detail="Resource not found")
+            
+        # Verify mentor has access to the parent session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == resource.session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to the session for this resource")
+            
+        # Delete file if exists
+        if hasattr(resource, 'file_path') and resource.file_path and os.path.exists(resource.file_path):
+            try:
+                os.remove(resource.file_path)
+            except:
+                pass
+                
+        # Delete database record
+        db.delete(resource)
+        db.commit()
+        
+        return {"message": "Resource deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete mentor resource error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/mentor/session-content/{content_id}")
+async def update_mentor_assigned_content(
+    content_id: int,
+    content_data: dict,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor updates assigned session content (meeting links, materials)"""
+    try:
+        # First check global session content
+        content = db.query(SessionContent).filter(SessionContent.id == content_id).first()
+        if not content:
+            from cohort_specific_models import CohortSessionContent
+            content = db.query(CohortSessionContent).filter(
+                and_(
+                    CohortSessionContent.id == content_id,
+                    CohortSessionContent.content_type != "RESOURCE"
+                )
+            ).first()
+            
+        if not content:
+            raise HTTPException(status_code=404, detail="Content not found")
+            
+        # Verify mentor has access to the parent session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == content.session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to the session for this content")
+            
+        # Allowed fields
+        allowed_fields = ['title', 'description', 'content_type', 'meeting_url', 'scheduled_time']
+        for field in allowed_fields:
+            if field in content_data:
+                setattr(content, field, content_data[field])
+                
+        db.commit()
+        return {"message": "Content updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Update mentor content error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/mentor/session-content/{content_id}")
+async def delete_mentor_assigned_content(
+    content_id: int,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor deletes assigned session content"""
+    try:
+        # First check global session content
+        content = db.query(SessionContent).filter(SessionContent.id == content_id).first()
+        if not content:
+            from cohort_specific_models import CohortSessionContent
+            content = db.query(CohortSessionContent).filter(
+                and_(
+                    CohortSessionContent.id == content_id,
+                    CohortSessionContent.content_type != "RESOURCE"
+                )
+            ).first()
+            
+        if not content:
+            raise HTTPException(status_code=404, detail="Content not found")
+            
+        # Verify mentor has access to the parent session
+        assignment = db.query(MentorSession).filter(
+            and_(
+                MentorSession.mentor_id == current_mentor.id,
+                MentorSession.session_id == content.session_id
+            )
+        ).first()
+        
+        if not assignment:
+            raise HTTPException(status_code=403, detail="You don't have access to the session for this content")
+            
+        # Delete database record
+        db.delete(content)
+        db.commit()
+        
+        return {"message": "Content deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Delete mentor content error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/mentor/sessions")
+async def create_mentor_session(
+    session_data: dict,
+    current_mentor: Mentor = Depends(get_current_mentor),
+    db: Session = Depends(get_db)
+):
+    """Mentor creates a session in an assigned module"""
+    try:
+        module_id = session_data.get('module_id')
+        if not module_id:
+            raise HTTPException(status_code=400, detail="module_id is required")
+            
+        # Verify mentor has access to this module
+        assignment = db.query(MentorModule).filter(
+            and_(
+                MentorModule.mentor_id == current_mentor.id,
+                MentorModule.module_id == module_id
+            )
+        ).first()
+        
+        if not assignment:
+            # Check cohort module assignment
+            from cohort_specific_models import CohortCourseModule, MentorCohortAssignment
+            cohort_module = db.query(CohortCourseModule).filter(CohortCourseModule.id == module_id).first()
+            if cohort_module:
+                # Check if mentor is assigned to this cohort
+                cohort_assignment = db.query(MentorCohortAssignment).filter(
+                    and_(
+                        MentorCohortAssignment.mentor_id == current_mentor.id,
+                        MentorCohortAssignment.cohort_id == cohort_module.cohort_id
+                    )
+                ).first()
+                if not cohort_assignment:
+                    raise HTTPException(status_code=403, detail="You don't have access to this cohort/module")
+            else:
+                raise HTTPException(status_code=403, detail="You don't have access to this module")
+        
+        # Check if it's a cohort-specific module
+        from cohort_specific_models import CohortCourseModule, CohortCourseSession
+        cohort_module = db.query(CohortCourseModule).filter(CohortCourseModule.id == module_id).first()
+        
+        scheduled_datetime = None
+        if session_data.get('scheduled_date') and session_data.get('scheduled_time'):
+            try:
+                date_str = f"{session_data['scheduled_date']} {session_data['scheduled_time']}"
+                scheduled_datetime = datetime.strptime(date_str, '%Y-%m-%d %H:%M')
+            except ValueError:
+                # Try iso format if simple format fails
+                try:
+                    scheduled_datetime = datetime.fromisoformat(session_data['scheduled_time'].replace('Z', '+00:00'))
+                except:
+                    pass
+        
+        if cohort_module:
+            # Create cohort-specific session
+            session = CohortCourseSession(
+                module_id=module_id,
+                session_number=session_data.get('session_number', 1),
+                title=session_data.get('title', 'Untitled Session'),
+                description=session_data.get('description', ''),
+                scheduled_time=scheduled_datetime,
+                duration_minutes=session_data.get('duration_minutes', 60),
+                zoom_link=session_data.get('zoom_link'),
+                session_type=session_data.get('session_type', 'LIVE')
+            )
+        else:
+            # Create global session
+            session = SessionModel(
+                module_id=module_id,
+                session_number=session_data.get('session_number', 1),
+                title=session_data.get('title', 'Untitled Session'),
+                description=session_data.get('description', ''),
+                scheduled_time=scheduled_datetime,
+                duration_minutes=session_data.get('duration_minutes', 60),
+                zoom_link=session_data.get('zoom_link'),
+                session_type=session_data.get('session_type', 'LIVE')
+            )
+            
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        
+        # Automatically assign this mentor to the new session
+        mentor_session = MentorSession(
+            mentor_id=current_mentor.id,
+            session_id=session.id
+        )
+        db.add(mentor_session)
+        db.commit()
+        
+        # Log action
+        log_mentor_action(
+            mentor_id=current_mentor.id,
+            mentor_username=current_mentor.username,
+            action_type="CREATE",
+            resource_type="SESSION",
+            resource_id=session.id,
+            details=f"Created session: {session.title} in module {module_id}",
+            db=db
+        )
+        
+        return {"message": "Session created successfully", "session_id": session.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Create mentor session error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
